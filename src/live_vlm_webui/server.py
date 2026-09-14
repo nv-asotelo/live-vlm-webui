@@ -38,11 +38,13 @@ from aiortc import (
     RTCIceServer,
 )
 from aiortc.contrib.media import MediaRelay
+from aiortc.mediastreams import MediaStreamError
 
 from .vlm_service import VLMService
 from .video_processor import VideoProcessorTrack
 from .gpu_monitor import create_monitor
-from .rtsp_track import RTSPVideoTrack
+from .rtsp_track import NetworkVideoTrack
+from .push_track import PushVideoTrack
 
 # Configure logging
 logging.basicConfig(
@@ -58,6 +60,9 @@ websockets = set()  # Track active WebSocket connections (all)
 gpu_monitor = None  # GPU monitoring instance
 gpu_monitor_task = None  # Background task for GPU monitoring
 rtsp_tracks = {}  # Track active RTSP streams {session_id: (rtsp_track, processor_track)}
+push_tracks = {}  # Track active push sources {session_id: (push_track, processor_track, task)}
+push_stopped = set()  # Sessions stopped on purpose; frames are refused until restarted
+allow_local_sources = False  # Set from --allow-local-sources; gates file:/// and device paths
 
 # Multi-session state (0.4.0)
 default_vlm_config = {}  # Set at startup; used to create new sessions
@@ -558,7 +563,8 @@ async def offer(request):
     """Handle WebRTC offer from client (supports both webcam and RTSP). Uses session_id for per-session VLM."""
     params = await request.json()
     offer_sdp = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
-    rtsp_url = params.get("rtsp_url")  # Optional RTSP URL for IP camera mode
+    # `stream_url` is the general name; `rtsp_url` is kept for existing clients.
+    rtsp_url = params.get("stream_url") or params.get("rtsp_url")
     session_id = params.get("session_id", "default")
 
     session = get_or_create_session(session_id)
@@ -601,9 +607,9 @@ async def offer(request):
 
     # If RTSP URL provided, create RTSP track instead of waiting for browser track
     if rtsp_url:
-        logger.info(f"[{session_id}] Creating RTSP track for: {rtsp_url}")
+        logger.info(f"[{session_id}] Creating source track for: {rtsp_url}")
         try:
-            rtsp_track = RTSPVideoTrack(rtsp_url)
+            rtsp_track = NetworkVideoTrack(rtsp_url, allow_local=allow_local_sources)
             rtsp_cleanup_track = rtsp_track  # Store for cleanup
 
             # Wait for initial connection to get stream info
@@ -620,12 +626,20 @@ async def offer(request):
             pc.addTrack(processor_track)
             logger.info("Added RTSP processor track to peer connection")
 
+        except ValueError as e:
+            # Rejected by the scheme allowlist: a client error, not a server fault.
+            logger.warning(f"Rejected source URL: {e}")
+            return web.Response(
+                status=400,
+                content_type="application/json",
+                text=json.dumps({"error": str(e)}),
+            )
         except Exception as e:
-            logger.error(f"Failed to create RTSP track: {e}")
+            logger.error(f"Failed to create source track: {e}")
             return web.Response(
                 status=500,
                 content_type="application/json",
-                text=json.dumps({"error": f"Failed to connect to RTSP stream: {str(e)}"}),
+                text=json.dumps({"error": f"Failed to connect to stream: {str(e)}"}),
             )
     else:
         # Webcam mode: wait for browser to send track
@@ -673,15 +687,15 @@ async def rtsp_start(request):
     """
     try:
         data = await request.json()
-        rtsp_url = data.get("rtsp_url")
+        rtsp_url = data.get("stream_url") or data.get("rtsp_url")
         session_id = data.get("session_id", "default")
 
         if not rtsp_url:
-            logger.warning("RTSP start request missing rtsp_url")
+            logger.warning("Stream start request missing stream_url")
             return web.Response(
                 status=400,
                 content_type="application/json",
-                text=json.dumps({"error": "Missing rtsp_url parameter"}),
+                text=json.dumps({"error": "Missing stream_url parameter"}),
             )
 
         # Check if session already exists
@@ -691,15 +705,20 @@ async def rtsp_start(request):
 
         logger.info(f"Starting RTSP stream for session {session_id}")
 
-        # Create RTSP video track
+        # Create the source video track
         try:
-            rtsp_track = RTSPVideoTrack(rtsp_url)
+            rtsp_track = NetworkVideoTrack(rtsp_url, allow_local=allow_local_sources)
+        except ValueError as e:
+            logger.warning(f"Rejected source URL: {e}")
+            return web.Response(
+                status=400, content_type="application/json", text=json.dumps({"error": str(e)})
+            )
         except Exception as e:
-            logger.error(f"Failed to create RTSP track: {e}")
+            logger.error(f"Failed to create source track: {e}")
             return web.Response(
                 status=500,
                 content_type="application/json",
-                text=json.dumps({"error": f"Failed to connect to RTSP stream: {str(e)}"}),
+                text=json.dumps({"error": f"Failed to connect to stream: {str(e)}"}),
             )
 
         # Create processor track with this session's VLM and session-scoped callback
@@ -845,6 +864,248 @@ async def _stop_rtsp_session(session_id: str):
         logger.warning(f"RTSP session {session_id} not found")
 
 
+# --------------------------------------------------------------------------- push source
+#
+# A push source inverts the direction of every other input: instead of the server pulling from a
+# device or URL, a client POSTs encoded frames in. It exists for cameras that can be read from a
+# few lines of Python but present neither a browser device nor a demuxable stream URL — a robot
+# with an SDK-only camera API, for instance. See docs/usage/push-sources.md.
+
+
+def _start_push_session(session_id: str, source_name: str):
+    """Create the push track, processor, and frame-consumption task for a session."""
+    push_track = PushVideoTrack(source_name=source_name)
+
+    session = get_or_create_session(session_id)
+    processor_track = VideoProcessorTrack(
+        push_track, session["vlm_service"], text_callback=get_session_callback(session_id)
+    )
+
+    async def consume_frames():
+        """Pull processed frames so VLM analysis runs; the frames themselves are discarded.
+
+        Same pattern as the RTSP background path: there is no peer connection to return video
+        to, because the source is not the browser. Results reach the UI over the WebSocket.
+        """
+        try:
+            while not push_track._stopped:
+                try:
+                    await processor_track.recv()
+                except (MediaStreamError, StopAsyncIteration):
+                    logger.info(f"Push source {session_id} ended")
+                    break
+                except Exception as e:
+                    logger.error(f"Error consuming pushed frame for {session_id}: {e}")
+                    break
+        finally:
+            logger.info(f"Frame consumption stopped for push source {session_id}")
+
+    frame_task = asyncio.create_task(consume_frames())
+    push_tracks[session_id] = (push_track, processor_track, frame_task)
+    logger.info(f"Push source started: {session_id} (source={source_name})")
+    return push_track
+
+
+async def _stop_push_session(session_id: str):
+    """Stop a push session and release its resources."""
+    if session_id not in push_tracks:
+        logger.warning(f"Push session {session_id} not found")
+        return
+
+    push_track, processor_track, frame_task = push_tracks[session_id]
+    push_track.stop()
+
+    if frame_task and not frame_task.done():
+        frame_task.cancel()
+        try:
+            await frame_task
+        except asyncio.CancelledError:
+            pass
+
+    try:
+        processor_track.stop()
+    except Exception as e:
+        logger.warning(f"Error stopping push processor track: {e}")
+
+    del push_tracks[session_id]
+    logger.info(f"Push source stopped: {session_id}")
+
+
+async def push_start(request):
+    """
+    Start a push source.
+
+    POST /api/push/start
+    Body: {"session_id": "optional-id", "source_name": "optional-label"}
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+
+    session_id = data.get("session_id", "default")
+    source_name = data.get("source_name", "push")
+
+    if session_id in push_tracks:
+        logger.info(f"Push session {session_id} already exists, restarting it")
+        await _stop_push_session(session_id)
+
+    push_stopped.discard(session_id)
+    push_track = _start_push_session(session_id, source_name)
+
+    return web.Response(
+        content_type="application/json",
+        text=json.dumps(
+            {"status": "started", "session_id": session_id, "stream_info": push_track.get_stats()}
+        ),
+    )
+
+
+async def push_frame(request):
+    """
+    Push one encoded frame.
+
+    POST /api/push/frame?session_id=...
+    Body: raw JPEG bytes (Content-Type: image/jpeg), or JSON {"image": "<base64>"}.
+
+    The session is created on first frame if it does not exist, so a client can be a bare loop
+    that POSTs frames without a separate handshake.
+    """
+    session_id = request.query.get("session_id", "default")
+
+    content_type = (request.headers.get("Content-Type") or "").lower()
+    try:
+        if content_type.startswith("application/json"):
+            data = await request.json()
+            b64 = data.get("image")
+            if not b64:
+                return web.Response(
+                    status=400,
+                    content_type="application/json",
+                    text=json.dumps({"error": "JSON body must contain an 'image' field"}),
+                )
+            import base64 as _b64
+
+            payload = _b64.b64decode(b64)
+            session_id = data.get("session_id", session_id)
+        else:
+            payload = await request.read()
+    except Exception as e:
+        return web.Response(
+            status=400,
+            content_type="application/json",
+            text=json.dumps({"error": f"could not read frame payload: {e}"}),
+        )
+
+    if not payload:
+        return web.Response(
+            status=400,
+            content_type="application/json",
+            text=json.dumps({"error": "empty frame payload"}),
+        )
+
+    if session_id not in push_tracks:
+        # A session that was stopped on purpose must not be resurrected by a client that simply
+        # has not noticed yet: otherwise "Stop" in the UI silently keeps decoding frames and
+        # billing VLM calls. Tell the pusher to stand down instead.
+        if session_id in push_stopped:
+            return web.Response(
+                status=409,
+                content_type="application/json",
+                text=json.dumps(
+                    {
+                        "error": "push session was stopped; start it again before pushing frames",
+                        "session_id": session_id,
+                    }
+                ),
+            )
+        _start_push_session(session_id, request.query.get("source_name", "push"))
+
+    push_track, _, _ = push_tracks[session_id]
+
+    try:
+        push_track.push_encoded(payload)
+    except ValueError as e:
+        return web.Response(
+            status=400, content_type="application/json", text=json.dumps({"error": str(e)})
+        )
+
+    stats = push_track.get_stats()
+    return web.Response(
+        content_type="application/json",
+        text=json.dumps(
+            {
+                "status": "accepted",
+                "session_id": session_id,
+                "frames_received": stats["frames_received"],
+                "frames_dropped": stats["frames_dropped"],
+            }
+        ),
+    )
+
+
+async def push_stop(request):
+    """
+    Stop a push source.
+
+    POST /api/push/stop
+    Body: {"session_id": "optional-id"}
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    session_id = data.get("session_id", "default")
+
+    push_stopped.add(session_id)
+    await _stop_push_session(session_id)
+
+    return web.Response(
+        content_type="application/json",
+        text=json.dumps({"status": "stopped", "session_id": session_id}),
+    )
+
+
+async def push_status(request):
+    """
+    Status of all push sources.
+
+    GET /api/push/status
+    """
+    streams = [
+        {"session_id": session_id, **track.get_stats()}
+        for session_id, (track, _, _) in push_tracks.items()
+    ]
+    return web.Response(
+        content_type="application/json",
+        text=json.dumps({"active_streams": len(push_tracks), "streams": streams}),
+    )
+
+
+async def push_latest(request):
+    """
+    Most recently pushed frame, as JPEG. Backs the UI preview for push sources, which have no
+    WebRTC track to render.
+
+    GET /api/push/latest.jpg?session_id=...
+    """
+    session_id = request.query.get("session_id", "default")
+
+    if session_id not in push_tracks:
+        raise web.HTTPNotFound(text="no such push session")
+
+    push_track, _, _ = push_tracks[session_id]
+    jpeg = push_track.last_jpeg
+    if not jpeg:
+        raise web.HTTPNotFound(text="no frame received yet")
+
+    return web.Response(
+        body=jpeg,
+        content_type="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 async def on_startup(app):
     """Initialize resources on server startup"""
     global gpu_monitor, gpu_monitor_task
@@ -895,6 +1156,11 @@ async def on_shutdown(app):
         await _stop_rtsp_session(session_id)
     logger.info("RTSP streams closed")
 
+    # Close all push sources
+    for session_id in list(push_tracks.keys()):
+        await _stop_push_session(session_id)
+    logger.info("Push sources closed")
+
     # Close all peer connections
     coros = [pc.close() for pc in pcs]
     await asyncio.gather(*coros)
@@ -921,10 +1187,21 @@ async def create_app(test_mode=False):
     app.router.add_get("/ws", websocket_handler)
     app.router.add_post("/offer", offer)
 
-    # RTSP endpoints
+    # Stream-source endpoints. /api/stream/* is the general name; /api/rtsp/* is the original
+    # name for the same handlers, kept so existing clients keep working.
+    app.router.add_post("/api/stream/start", rtsp_start)
+    app.router.add_post("/api/stream/stop", rtsp_stop)
+    app.router.add_get("/api/stream/status", rtsp_status)
     app.router.add_post("/api/rtsp/start", rtsp_start)
     app.router.add_post("/api/rtsp/stop", rtsp_stop)
     app.router.add_get("/api/rtsp/status", rtsp_status)
+
+    # Push-source endpoints (externally supplied frames)
+    app.router.add_post("/api/push/start", push_start)
+    app.router.add_post("/api/push/frame", push_frame)
+    app.router.add_post("/api/push/stop", push_stop)
+    app.router.add_get("/api/push/status", push_status)
+    app.router.add_get("/api/push/latest.jpg", push_latest)
 
     # Serve static files (images, etc.)
     # Always serve from static/images within the package (works for both pip and dev installs)
@@ -1086,6 +1363,13 @@ def main():
         action="store_true",
         help="Disable SSL (not recommended - webcam requires HTTPS)",
     )
+    parser.add_argument(
+        "--allow-local-sources",
+        action="store_true",
+        help="Allow stream sources that read local files and devices (file:///, /dev/video0). "
+        "Off by default: the source URL comes from the client, so enabling this lets anyone "
+        "who can reach the WebUI read files off this machine.",
+    )
 
     args = parser.parse_args()
 
@@ -1170,6 +1454,13 @@ def main():
     # Update frame processing rate in VideoProcessorTrack if needed
     # (This is a bit hacky but works for this demo)
     VideoProcessorTrack.process_every_n_frames = args.process_every
+
+    global allow_local_sources
+    allow_local_sources = args.allow_local_sources
+    if allow_local_sources:
+        logger.warning(
+            "⚠️  --allow-local-sources is on: stream URLs may read local files and devices"
+        )
 
     # Create web application using create_app
     app = asyncio.run(create_app(test_mode=False))

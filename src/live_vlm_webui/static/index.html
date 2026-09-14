@@ -2273,9 +2273,14 @@ limitations under the License.
                             <i data-lucide="video" style="width: 14px; height: 14px; margin-right: 4px;"></i>
                             Webcam
                         </button>
-                        <button class="input-source-tab" data-source="rtsp" title="RTSP IP Camera (Beta - Tested with Reolink RLC-811A)">
+                        <button class="input-source-tab" data-source="rtsp" title="Any stream URL the server can open: RTSP, HTTP/MJPEG, HLS, RTMP, SRT">
                             <i data-lucide="cast" style="width: 14px; height: 14px; margin-right: 4px;"></i>
-                            RTSP Stream
+                            Stream URL
+                            <span class="beta-badge">BETA</span>
+                        </button>
+                        <button class="input-source-tab" data-source="push" title="Frames pushed in over HTTP by an external client">
+                            <i data-lucide="upload" style="width: 14px; height: 14px; margin-right: 4px;"></i>
+                            Push Source
                             <span class="beta-badge">BETA</span>
                         </button>
                     </div>
@@ -2296,27 +2301,55 @@ limitations under the License.
                         <div class="form-group">
                             <div style="display: flex; align-items: center; gap: 4px; margin-bottom: 8px;">
                                 <div class="tooltip-wrapper" style="margin-bottom: 0; flex: 1;">
-                                    <label style="margin-bottom: 0;">RTSP Stream URL</label>
+                                    <label style="margin-bottom: 0;">Stream URL</label>
                                     <span class="tooltip-icon">ℹ</span>
                                     <div class="tooltip-text">
-                                        <strong>Format:</strong> rtsp://[user:pass@]ip:port/path<br><br>
+                                        Any stream the server can open.<br><br>
                                         <strong>Examples:</strong><br>
-                                        • rtsp://192.168.1.100:554/stream<br>
-                                        • rtsp://admin:password@192.168.1.100:554/h264Preview_01_main
+                                        • rtsp://admin:password@192.168.1.100:554/h264Preview_01_main<br>
+                                        • http://192.168.1.50/mjpg/video.mjpg<br>
+                                        • https://example.com/live/stream.m3u8<br>
+                                        • srt://192.168.1.10:9000<br><br>
+                                        Local files and devices (file:///, /dev/video0) require the
+                                        server to be started with --allow-local-sources.
                                     </div>
                                 </div>
                                 <button class="icon-btn" id="testRtspBtn" title="Test Connection">
                                     <i data-lucide="test-tube-diagonal"></i>
                                 </button>
                             </div>
-                            <input type="text" id="rtspUrl" placeholder="rtsp://192.168.1.100:554/stream" style="margin-bottom: 16px;">
+                            <input type="text" id="rtspUrl" placeholder="rtsp://... http://... srt://..." style="margin-bottom: 16px;">
                             <div id="rtspStatus" class="input-hint" style="margin-top: -8px; margin-bottom: 12px; display: none;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Push Source Controls -->
+                    <div id="pushControls" style="display: none;">
+                        <div class="form-group">
+                            <div class="tooltip-wrapper" style="margin-bottom: 8px;">
+                                <label style="margin-bottom: 0;">Source Name</label>
+                                <span class="tooltip-icon">ℹ</span>
+                                <div class="tooltip-text">
+                                    For cameras that are neither a browser device nor a stream URL —
+                                    a robot with an SDK-only camera API, for example. Press Start,
+                                    then POST JPEG frames from your client.
+                                </div>
+                            </div>
+                            <input type="text" id="pushSourceName" placeholder="my-camera" value="push" style="margin-bottom: 12px;">
+                            <label style="margin-bottom: 6px;">Push frames to</label>
+                            <input type="text" id="pushEndpoint" readonly style="margin-bottom: 8px; font-family: monospace; font-size: 11px;">
+                            <div class="input-hint" style="margin-bottom: 12px;">
+                                POST raw JPEG bytes (<code>Content-Type: image/jpeg</code>) or JSON
+                                <code>{"image": "&lt;base64&gt;"}</code>.
+                                <a href="https://github.com/nv-asotelo/live-vlm-webui/blob/main/docs/usage/push-sources.md" target="_blank" style="color: var(--accent-color, #76b900); text-decoration: underline;">Docs &amp; examples</a>
+                            </div>
+                            <div id="pushStatus" class="input-hint" style="margin-bottom: 12px; display: none;"></div>
                         </div>
                     </div>
                     <div class="form-group">
                         <!-- RTSP Beta Warning (shown only when RTSP tab is active) -->
                         <div id="rtspBetaWarning" class="input-hint" style="margin-top: 12px; color: var(--warning-color); display: none; align-items: center; gap: 4px;">
-                            <span><strong>Beta:</strong> Tested with Reolink RLC-811A. Other cameras may work. <a href="https://github.com/NVIDIA-AI-IOT/live-vlm-webui/blob/main/docs/usage/rtsp-ip-cameras.md" target="_blank" style="color: var(--warning-color); text-decoration: underline;">Learn more</a></span>
+                            <span><strong>Beta:</strong> RTSP tested with Reolink RLC-811A; other protocols and cameras may work. <a href="https://github.com/nv-asotelo/live-vlm-webui/blob/main/docs/usage/rtsp-ip-cameras.md" target="_blank" style="color: var(--warning-color); text-decoration: underline;">Learn more</a></span>
                         </div>
                     </div>
                     <div class="form-group" style="margin-bottom: 0;">
@@ -2420,6 +2453,9 @@ After commands, explain: obstacles detected, clearance margins, goal inference, 
                 </div>
 
                 <video id="videoElement" autoplay playsinline muted></video>
+                <!-- Push sources have no WebRTC track to render, so the preview is the most
+                     recently pushed frame, polled from /api/push/latest.jpg -->
+                <img id="pushPreview" style="display: none; width: 100%; height: 100%; object-fit: contain;">
                 <div class="video-overlay" id="videoOverlay"></div>
             </div>
 
@@ -2696,6 +2732,7 @@ After commands, explain: obstacles detected, clearance margins, goal inference, 
                 const source = tab.getAttribute('data-source');
                 const webcamControls = document.getElementById('webcamControls');
                 const rtspControls = document.getElementById('rtspControls');
+                const pushControls = document.getElementById('pushControls');
                 const rtspBetaWarning = document.getElementById('rtspBetaWarning');
                 const startBtn = document.getElementById('startBtn');
 
@@ -2704,14 +2741,13 @@ After commands, explain: obstacles detected, clearance margins, goal inference, 
                 tab.classList.add('active');
 
                 // Show/hide controls
-                if (source === 'webcam') {
-                    webcamControls.style.display = 'block';
-                    rtspControls.style.display = 'none';
-                    rtspBetaWarning.style.display = 'none';
-                } else if (source === 'rtsp') {
-                    webcamControls.style.display = 'none';
-                    rtspControls.style.display = 'block';
-                    rtspBetaWarning.style.display = 'flex';
+                webcamControls.style.display = source === 'webcam' ? 'block' : 'none';
+                rtspControls.style.display = source === 'rtsp' ? 'block' : 'none';
+                pushControls.style.display = source === 'push' ? 'block' : 'none';
+                rtspBetaWarning.style.display = source === 'rtsp' ? 'flex' : 'none';
+
+                if (source === 'push') {
+                    updatePushEndpoint();
                 }
             });
         });
@@ -2756,7 +2792,7 @@ After commands, explain: obstacles detected, clearance margins, goal inference, 
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        rtsp_url: rtspUrl,
+                        stream_url: rtspUrl,
                         session_id: 'test-' + Date.now()
                     })
                 });
@@ -4170,7 +4206,117 @@ After commands, explain: obstacles detected, clearance margins, goal inference, 
                 await startWebcam();
             } else if (inputSource === 'rtsp') {
                 await startRTSP();
+            } else if (inputSource === 'push') {
+                await startPush();
             }
+        }
+
+        // --- Push source -------------------------------------------------------------------
+        // The server is fed by an external client rather than pulling from a device or URL, so
+        // there is no WebRTC negotiation here: start the session, then poll the last frame for
+        // the preview while VLM results arrive over the existing WebSocket.
+        let pushPreviewTimer = null;
+        let pushStatusTimer = null;
+
+        function updatePushEndpoint() {
+            const el = document.getElementById('pushEndpoint');
+            if (el) {
+                el.value = `${window.location.origin}/api/push/frame?session_id=${sessionId}`;
+            }
+        }
+
+        async function startPush() {
+            try {
+                if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+                    connectWebSocket();
+                }
+
+                const sourceName = (document.getElementById('pushSourceName').value || 'push').trim();
+                updateStatus('Starting push source...', 'processing');
+
+                const response = await fetch('/api/push/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId, source_name: sourceName }),
+                });
+
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    throw new Error(err.error || `HTTP ${response.status}`);
+                }
+
+                updatePushEndpoint();
+                document.getElementById('pushSourceName').disabled = true;
+
+                // Swap the <video> element for the polled still preview.
+                videoElement.style.display = 'none';
+                const preview = document.getElementById('pushPreview');
+                preview.style.display = 'block';
+
+                isAnalysisRunning = true;
+                updateStatus('Waiting for frames...', 'processing');
+
+                // Preview polling starts only once the server reports frames arriving; fetching
+                // latest.jpg before the first push just 404s into the console.
+                let previewStarted = false;
+
+                pushStatusTimer = setInterval(async () => {
+                    try {
+                        const r = await fetch('/api/push/status');
+                        const data = await r.json();
+                        const s = (data.streams || []).find(x => x.session_id === sessionId);
+                        const statusDiv = document.getElementById('pushStatus');
+                        if (s) {
+                            statusDiv.style.display = 'block';
+                            statusDiv.style.color = s.connected ? '#76b900' : '#ff6b35';
+                            const res = (s.width && s.height) ? `${s.width}×${s.height}` : '—';
+                            statusDiv.textContent = s.connected
+                                ? `● receiving ${res} · ${s.frames_received} frames · ${s.fps || '—'} fps · ${s.frames_dropped} dropped`
+                                : `○ no frames yet — POST to the URL above`;
+
+                            if (s.connected) {
+                                updateStatus('Streaming', 'connected');
+                                if (!previewStarted) {
+                                    previewStarted = true;
+                                    pushPreviewTimer = setInterval(() => {
+                                        // Cache-bust so the browser re-fetches each frame.
+                                        preview.src = `/api/push/latest.jpg?session_id=${sessionId}&t=${Date.now()}`;
+                                    }, 200);
+                                }
+                            }
+                        }
+                    } catch (e) { /* transient */ }
+                }, 1000);
+
+            } catch (error) {
+                console.error('Error starting push source:', error);
+                updateStatus('Push start failed', 'disconnected');
+                const statusDiv = document.getElementById('pushStatus');
+                statusDiv.style.display = 'block';
+                statusDiv.style.color = '#ff6b35';
+                statusDiv.textContent = `⚠️ ${error.message}`;
+                stop();
+            }
+        }
+
+        async function stopPush() {
+            if (pushPreviewTimer) { clearInterval(pushPreviewTimer); pushPreviewTimer = null; }
+            if (pushStatusTimer) { clearInterval(pushStatusTimer); pushStatusTimer = null; }
+
+            const preview = document.getElementById('pushPreview');
+            if (preview) { preview.style.display = 'none'; preview.src = ''; }
+            videoElement.style.display = '';
+
+            const nameInput = document.getElementById('pushSourceName');
+            if (nameInput) nameInput.disabled = false;
+
+            try {
+                await fetch('/api/push/stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId }),
+                });
+            } catch (e) { /* server may already be gone */ }
         }
 
         // Start WebRTC (Webcam mode)
@@ -4348,7 +4494,7 @@ After commands, explain: obstacles detected, clearance margins, goal inference, 
                     body: JSON.stringify({
                         sdp: peerConnection.localDescription.sdp,
                         type: peerConnection.localDescription.type,
-                        rtsp_url: rtspUrl,
+                        stream_url: rtspUrl,
                         session_id: sessionId,
                     })
                 });
@@ -4404,6 +4550,9 @@ After commands, explain: obstacles detected, clearance margins, goal inference, 
             }
 
             videoElement.srcObject = null;
+
+            // Tear down the push source, if that was the active input
+            await stopPush();
 
             isAnalysisRunning = false;
             updateStatus('Connected', 'connected');

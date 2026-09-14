@@ -15,6 +15,20 @@
 
 Live VLM WebUI now supports RTSP streams from IP cameras, enabling continuous monitoring and analysis of security cameras, baby monitors, and other network video sources.
 
+> [!NOTE]
+> **This input is no longer RTSP-only.** The tab is now **Stream URL**, and the server accepts any
+> source it can open: `rtsp://`, `rtsps://`, `http(s)://` (MJPEG, HLS), `rtmp(s)://`, `srt://`,
+> `udp://`, `rtp://`, `tcp://`. The API field is `stream_url`, and the endpoints are
+> `/api/stream/start|stop|status`; the old `rtsp_url` field and `/api/rtsp/*` routes still work.
+> Everything below about RTSP still applies — it is simply one scheme among several now.
+>
+> **Local files and devices** (`file:///clip.mp4`, `/dev/video0`) are **rejected by default** and
+> require starting the server with `--allow-local-sources`. The URL is supplied by whoever can
+> reach the WebUI, so enabling it lets them read files off the server host.
+>
+> For cameras that expose no URL at all — a robot whose camera lives behind an SDK, for instance —
+> see [push sources](push-sources.md), where your code sends frames to the server instead.
+
 ### Tested Hardware
 
 | Brand | Model | Resolution | Codec | Status | Notes |
