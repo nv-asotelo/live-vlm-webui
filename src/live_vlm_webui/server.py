@@ -45,6 +45,7 @@ from .video_processor import VideoProcessorTrack
 from .gpu_monitor import create_monitor
 from .rtsp_track import NetworkVideoTrack
 from .push_track import PushVideoTrack
+from .reachy_control import ReachyControl, MOTOR_MODES
 
 # Configure logging
 logging.basicConfig(
@@ -63,6 +64,7 @@ rtsp_tracks = {}  # Track active RTSP streams {session_id: (rtsp_track, processo
 push_tracks = {}  # Track active push sources {session_id: (push_track, processor_track, task)}
 push_stopped = set()  # Sessions stopped on purpose; frames are refused until restarted
 allow_local_sources = False  # Set from --allow-local-sources; gates file:/// and device paths
+reachy = None  # ReachyControl when --reachy-host is given; the control panel stays hidden otherwise
 
 # Multi-session state (0.4.0)
 default_vlm_config = {}  # Set at startup; used to create new sessions
@@ -1121,6 +1123,87 @@ async def push_latest(request):
     )
 
 
+# --------------------------------------------------------------------------- Reachy Mini control
+#
+# Proxied rather than called from the browser: keeps the robot address server-side, avoids CORS
+# with a daemon we do not control, and avoids the mixed-content block that would otherwise stop an
+# HTTPS page from reaching a plain-HTTP daemon.
+
+
+def _require_reachy():
+    if reachy is None:
+        raise web.HTTPServiceUnavailable(
+            text=json.dumps({"error": "Reachy Mini control is not enabled; "
+                                      "start the server with --reachy-host"}),
+            content_type="application/json",
+        )
+    return reachy
+
+
+async def reachy_state(request):
+    if reachy is None:
+        return web.json_response({"enabled": False})
+    try:
+        return web.json_response({"enabled": True, **(await reachy.state())})
+    except Exception as e:
+        return web.json_response({"enabled": True, "reachable": False, "error": str(e)})
+
+
+async def _reachy_action(coro):
+    try:
+        return web.json_response({"ok": True, **(await coro)})
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except Exception as e:
+        logger.error(f"Reachy command failed: {e}")
+        return web.json_response({"error": f"robot unreachable or refused: {e}"}, status=502)
+
+
+async def reachy_wake(request):
+    return await _reachy_action(_require_reachy().wake_up())
+
+
+async def reachy_sleep(request):
+    return await _reachy_action(_require_reachy().go_to_sleep())
+
+
+async def reachy_center(request):
+    return await _reachy_action(_require_reachy().center())
+
+
+async def reachy_motors(request):
+    mode = request.match_info["mode"]
+    if mode not in MOTOR_MODES:
+        return web.json_response({"error": f"unknown motor mode {mode}"}, status=400)
+    return await _reachy_action(_require_reachy().set_motor_mode(mode))
+
+
+async def reachy_goto(request):
+    """Body: any of pitch/yaw/roll/body_yaw (degrees), antennas [l, r], duration, interpolation.
+
+    Omitted axes hold their current value, so a single slider does not reset the others.
+    """
+    ctl = _require_reachy()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    def num(key):
+        v = body.get(key)
+        return None if v is None or v == "" else float(v)
+
+    try:
+        return await _reachy_action(ctl.goto(
+            pitch=num("pitch"), yaw=num("yaw"), roll=num("roll"), body_yaw=num("body_yaw"),
+            antennas=body.get("antennas"),
+            duration=float(body.get("duration", 1.0)),
+            interpolation=body.get("interpolation", "minjerk"),
+        ))
+    except (TypeError, ValueError) as e:
+        return web.json_response({"error": f"bad request: {e}"}, status=400)
+
+
 async def on_startup(app):
     """Initialize resources on server startup"""
     global gpu_monitor, gpu_monitor_task
@@ -1210,6 +1293,14 @@ async def create_app(test_mode=False):
     app.router.add_post("/api/rtsp/start", rtsp_start)
     app.router.add_post("/api/rtsp/stop", rtsp_stop)
     app.router.add_get("/api/rtsp/status", rtsp_status)
+
+    # Reachy Mini control (only mounted when --reachy-host is configured)
+    app.router.add_get("/api/reachy/state", reachy_state)
+    app.router.add_post("/api/reachy/wake", reachy_wake)
+    app.router.add_post("/api/reachy/sleep", reachy_sleep)
+    app.router.add_post("/api/reachy/center", reachy_center)
+    app.router.add_post("/api/reachy/goto", reachy_goto)
+    app.router.add_post("/api/reachy/motors/{mode}", reachy_motors)
 
     # Push-source endpoints (externally supplied frames)
     app.router.add_post("/api/push/start", push_start)
@@ -1379,6 +1470,11 @@ def main():
         help="Disable SSL (not recommended - webcam requires HTTPS)",
     )
     parser.add_argument(
+        "--reachy-host",
+        help="Address of a Reachy Mini daemon (e.g. 192.168.1.42). Enables the robot control "
+        "panel in the UI; omitted, the panel stays hidden.",
+    )
+    parser.add_argument(
         "--allow-local-sources",
         action="store_true",
         help="Allow stream sources that read local files and devices (file:///, /dev/video0). "
@@ -1470,8 +1566,11 @@ def main():
     # (This is a bit hacky but works for this demo)
     VideoProcessorTrack.process_every_n_frames = args.process_every
 
-    global allow_local_sources
+    global allow_local_sources, reachy
     allow_local_sources = args.allow_local_sources
+    if args.reachy_host:
+        reachy = ReachyControl(args.reachy_host)
+        logger.info(f"Reachy Mini control enabled: {reachy.base}")
     if allow_local_sources:
         logger.warning(
             "⚠️  --allow-local-sources is on: stream URLs may read local files and devices"

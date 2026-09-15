@@ -2369,6 +2369,85 @@ limitations under the License.
                 </div>
             </div>
 
+            <!-- Reachy Mini control (hidden unless the server was started with --reachy-host) -->
+            <div class="panel" id="reachyPanel" style="display: none;">
+                <div class="panel-header" onclick="togglePanel('reachyControl')">
+                    <div class="panel-title">
+                        <span class="panel-icon"><i data-lucide="bot"></i></span>
+                        Reachy Mini
+                    </div>
+                    <span class="panel-toggle" id="reachyControlToggle">▼</span>
+                </div>
+                <div class="panel-content" id="reachyControl">
+                    <div id="reachyStatus" class="input-hint" style="margin-bottom: 10px;">checking…</div>
+
+                    <div class="form-group">
+                        <label>Power</label>
+                        <div style="display:flex; gap:6px;">
+                            <button onclick="reachyPost('/api/reachy/wake')" style="flex:1;">
+                                <i data-lucide="sunrise" style="width:13px;height:13px;margin-right:4px;"></i>Wake
+                            </button>
+                            <button onclick="reachyPost('/api/reachy/sleep')" style="flex:1;">
+                                <i data-lucide="moon" style="width:13px;height:13px;margin-right:4px;"></i>Sleep
+                            </button>
+                        </div>
+                        <div class="input-hint">Wake plays the greeting and enables motors; Sleep parks the head.</div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Look</label>
+                        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:6px; max-width:230px;">
+                            <span></span>
+                            <button onclick="reachyNudge(0, 12)" title="look up">▲</button>
+                            <span></span>
+                            <button onclick="reachyNudge(20, 0)" title="look left">◀</button>
+                            <button onclick="reachyPost('/api/reachy/center')" title="centre">◎</button>
+                            <button onclick="reachyNudge(-20, 0)" title="look right">▶</button>
+                            <span></span>
+                            <button onclick="reachyNudge(0, -12)" title="look down">▼</button>
+                            <span></span>
+                        </div>
+                        <div class="input-hint">Each press nudges from the current pose. ◎ re-centres.</div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Head yaw <span id="reachyYawVal" class="hint">0°</span></label>
+                        <input type="range" id="reachyYaw" min="-90" max="90" value="0" step="5"
+                               oninput="document.getElementById('reachyYawVal').textContent=this.value+'°'"
+                               onchange="reachyGoto({yaw: parseFloat(this.value)})">
+                    </div>
+                    <div class="form-group">
+                        <label>Head pitch <span id="reachyPitchVal" class="hint">0°</span></label>
+                        <input type="range" id="reachyPitch" min="-40" max="40" value="0" step="5"
+                               oninput="document.getElementById('reachyPitchVal').textContent=this.value+'°'"
+                               onchange="reachyGoto({pitch: parseFloat(this.value)})">
+                    </div>
+                    <div class="form-group">
+                        <label>Body yaw <span id="reachyBodyVal" class="hint">0°</span></label>
+                        <input type="range" id="reachyBody" min="-160" max="160" value="0" step="10"
+                               oninput="document.getElementById('reachyBodyVal').textContent=this.value+'°'"
+                               onchange="reachyGoto({body_yaw: parseFloat(this.value)})">
+                    </div>
+                    <div class="form-group">
+                        <label>Antennas <span id="reachyAntVal" class="hint">0°</span></label>
+                        <input type="range" id="reachyAnt" min="-90" max="90" value="0" step="10"
+                               oninput="document.getElementById('reachyAntVal').textContent=this.value+'°'"
+                               onchange="reachyGoto({antennas:[parseFloat(this.value), -parseFloat(this.value)]})">
+                    </div>
+
+                    <div class="form-group" style="margin-bottom:0;">
+                        <label>Motors</label>
+                        <div style="display:flex; gap:6px;">
+                            <button onclick="reachyPost('/api/reachy/motors/enabled')" style="flex:1;">Stiff</button>
+                            <button onclick="reachyPost('/api/reachy/motors/gravity_compensation')" style="flex:1;">Soft</button>
+                            <button onclick="reachyPost('/api/reachy/motors/disabled')" style="flex:1;">Limp</button>
+                        </div>
+                        <div class="input-hint"><b>Soft</b> lets you pose the head by hand and it stays put.
+                            <b>Limp</b> removes all power — support the head before using it.</div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Prompt Editor -->
             <div class="panel">
                 <div class="panel-header" onclick="togglePanel('promptEditor')">
@@ -3500,6 +3579,78 @@ After commands, explain: obstacles detected, clearance margins, goal inference, 
                 currentPrompt.textContent = `Prompt: ${promptPreview}`;
             }
         }
+
+        // --- Reachy Mini control -----------------------------------------------------------
+        let reachyPose = { yaw: 0, pitch: 0, roll: 0, body_yaw: 0 };
+
+        function reachySay(msg, bad) {
+            const el = document.getElementById('reachyStatus');
+            el.textContent = msg;
+            el.style.color = bad ? '#ff6b35' : '';
+        }
+
+        async function reachyPost(path, body) {
+            try {
+                const r = await fetch(path, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body || {}),
+                });
+                const j = await r.json().catch(() => ({}));
+                if (!r.ok) { reachySay(j.error || `HTTP ${r.status}`, true); return null; }
+                // The server reports when it had to clamp a value, so the robot not going exactly
+                // where you asked is visible rather than mysterious.
+                if (j.notes && j.notes.length) reachySay(j.notes.join('; '));
+                setTimeout(refreshReachy, 900);
+                return j;
+            } catch (e) { reachySay(String(e), true); return null; }
+        }
+
+        function reachyGoto(delta) {
+            return reachyPost('/api/reachy/goto', Object.assign({ duration: 0.8 }, delta));
+        }
+
+        // Nudge relative to the last known pose, so repeated presses accumulate.
+        function reachyNudge(dYaw, dPitch) {
+            const next = {
+                yaw: (reachyPose.yaw || 0) + dYaw,
+                pitch: (reachyPose.pitch || 0) + dPitch,
+            };
+            reachyPose.yaw = next.yaw; reachyPose.pitch = next.pitch;
+            return reachyGoto(next);
+        }
+
+        async function refreshReachy() {
+            try {
+                const st = await (await fetch('/api/reachy/state', { cache: 'no-store' })).json();
+                const panel = document.getElementById('reachyPanel');
+                if (!st.enabled) { panel.style.display = 'none'; return; }
+                panel.style.display = '';
+                if (st.reachable === false) { reachySay(st.error || 'robot unreachable', true); return; }
+
+                reachyPose = Object.assign(reachyPose, st.pose_deg || {},
+                                           { body_yaw: st.body_yaw_deg });
+                const p = st.pose_deg || {};
+                reachySay(`${st.ready ? '● awake' : '○ asleep'} · ${st.robot_name || 'reachy'} v${st.version || '?'}`
+                          + ` · motors ${st.motor_mode || '?'}`
+                          + (p.yaw !== undefined ? ` · yaw ${p.yaw}° pitch ${p.pitch}°` : ''));
+
+                // Reflect the real pose in the sliders, so they never lie about where the robot is.
+                const set = (id, v, lbl) => {
+                    const el = document.getElementById(id);
+                    if (el && document.activeElement !== el && v !== undefined && v !== null) {
+                        el.value = Math.round(v);
+                        document.getElementById(lbl).textContent = Math.round(v) + '°';
+                    }
+                };
+                set('reachyYaw', p.yaw, 'reachyYawVal');
+                set('reachyPitch', p.pitch, 'reachyPitchVal');
+                set('reachyBody', st.body_yaw_deg, 'reachyBodyVal');
+            } catch (e) { /* panel simply stays as it was */ }
+        }
+
+        refreshReachy();
+        setInterval(refreshReachy, 5000);
 
         // Force one inference right now, using whatever is currently typed in the editor.
         async function runPromptNow() {
