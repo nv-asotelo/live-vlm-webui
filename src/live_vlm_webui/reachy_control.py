@@ -39,14 +39,6 @@ LIMITS_DEG = {
 # The head may not be twisted more than this away from the body.
 MAX_YAW_DELTA_DEG = 65.0
 
-# Where "centre" parks the antennas. Deliberately not 0.
-#
-# Measured on a Reachy Mini: held at exactly 0 deg one antenna hunts continuously across a ~0.7 deg
-# band (the other is rock steady), which reads as a visible twitch. Held at 20 deg both are
-# perfectly still - 0.00 deg of movement across a 12-sample window. The servo is dithering in its
-# deadband around the null position, so parking a few degrees away from it stops the twitch without
-# being visibly off-centre.
-ANTENNA_PARK_DEG = 5.0
 
 MOTOR_MODES = ("enabled", "disabled", "gravity_compensation")
 INTERPOLATIONS = ("linear", "minjerk", "ease_in_out", "cartoon")
@@ -225,11 +217,17 @@ class ReachyControl:
         }
 
     async def center(self, duration: float = 1.0) -> dict:
-        """Return to the neutral pose, antennas parked just off zero (see ANTENNA_PARK_DEG)."""
-        res = await self.goto(
-            pitch=0, yaw=0, roll=0, body_yaw=0,
-            antennas=[ANTENNA_PARK_DEG, ANTENNA_PARK_DEG],
-            duration=duration,
-        )
+        """Return to the neutral pose, antennas down.
+
+        Note on antenna twitch: on this unit one antenna dithers intermittently across roughly
+        0.6-1.0 deg while the other never moves. Measured across commanded angles 0/5/10/15/20/25
+        and across Stiff and Soft motor modes, it does not correlate with either - it appears and
+        disappears at the same angle in the same mode. Only removing power (Limp) reliably stops
+        it, at the cost of the head going compliant. There is no servo gain or deadband setting in
+        the daemon's API to tune, so nothing here can fix it; parking the antennas elsewhere was
+        tried and does not help.
+        """
+        res = await self.goto(pitch=0, yaw=0, roll=0, body_yaw=0, antennas=[0, 0],
+                              duration=duration)
         res["message"] = "centering"
         return res
