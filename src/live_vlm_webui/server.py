@@ -355,7 +355,7 @@ async def websocket_handler(request):
                 "model": svc.model,
                 "api_base": svc.api_base,
                 "prompt": svc.prompt,
-                "process_every": _VPT.process_every_n_frames,
+                "process_every": svc.process_every or _VPT.process_every_n_frames,
                 "session_id": session_id,
             }
         )
@@ -426,8 +426,12 @@ async def websocket_handler(request):
                             if 1 <= process_every <= 3600:
                                 from .video_processor import VideoProcessorTrack
 
-                                old_value = VideoProcessorTrack.process_every_n_frames
-                                VideoProcessorTrack.process_every_n_frames = process_every
+                                # Scope the change to this session. Assigning to the class
+                                # attribute here would retune every other session on the server.
+                                old_value = (
+                                    svc.process_every or VideoProcessorTrack.process_every_n_frames
+                                )
+                                svc.process_every = process_every
                                 logger.info(
                                     f"[{session_id}] Processing interval updated: {old_value} → {process_every} frames"
                                 )

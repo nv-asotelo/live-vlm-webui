@@ -137,7 +137,11 @@ class VideoProcessorTrack(VideoStreamTrack):
 
             # Only convert to numpy when needed (for VLM processing or first frame)
             # This avoids expensive CPU color conversion on every frame
-            interval = self.__class__.process_every_n_frames
+            # Session value wins; the class attribute is only the default for sessions that have
+            # not set one of their own.
+            interval = getattr(self.vlm_service, "process_every", None) or (
+                self.__class__.process_every_n_frames
+            )
             # A "run now" request from the UI fires on the very next frame, whatever the interval.
             run_now = self.vlm_service.consume_immediate()
             need_conversion = (

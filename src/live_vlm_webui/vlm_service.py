@@ -65,6 +65,11 @@ class VLMService:
         # for every source type (webcam negotiation, RTSP start, push start) and is not reachable
         # from the WebSocket handler, whereas this object always is.
         self._run_now = False
+        # Per-session frame interval. None means "use the process-wide default", which is what
+        # --process-every sets. Kept here because VideoProcessorTrack.process_every_n_frames is a
+        # CLASS attribute: writing to it from one session changed the rate for every other session
+        # on the server, so one tab could silently stop another tab's inference.
+        self.process_every: Optional[int] = None
         self._processing_lock = asyncio.Lock()
         self._last_request_payload = None  # For debug: request body (image truncated)
         self._last_response_payload = None  # For debug: API response body
