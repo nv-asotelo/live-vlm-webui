@@ -2435,6 +2435,18 @@ limitations under the License.
                                onchange="reachyGoto({antennas:[parseFloat(this.value), -parseFloat(this.value)]})">
                     </div>
 
+                    <div class="form-group">
+                        <label>Robot admin</label>
+                        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                            <a class="chip" id="reachyDocsLink" href="#" target="_blank" rel="noreferrer">API explorer</a>
+                            <a class="chip" id="reachyDashLink" href="#" target="_blank" rel="noreferrer">Dashboard</a>
+                            <a class="chip" id="reachyLogsLink" href="#" target="_blank" rel="noreferrer">Logs</a>
+                        </div>
+                        <div class="input-hint">The daemon's own admin surface on port 8000.
+                            <b>API explorer</b> (Swagger) is the useful one — every endpoint including
+                            wifi, updates and apps. The built-in Dashboard is marked deprecated upstream.</div>
+                    </div>
+
                     <div class="form-group" style="margin-bottom:0;">
                         <label>Motors</label>
                         <div style="display:flex; gap:6px;">
@@ -3628,6 +3640,11 @@ After commands, explain: obstacles detected, clearance margins, goal inference, 
                 panel.style.display = '';
                 if (st.reachable === false) { reachySay(st.error || 'robot unreachable', true); return; }
 
+                if (st.admin_base) {
+                    document.getElementById('reachyDocsLink').href = st.admin_base + '/docs';
+                    document.getElementById('reachyDashLink').href = st.admin_base + '/';
+                    document.getElementById('reachyLogsLink').href = st.admin_base + '/logs';
+                }
                 reachyPose = Object.assign(reachyPose, st.pose_deg || {},
                                            { body_yaw: st.body_yaw_deg });
                 const p = st.pose_deg || {};

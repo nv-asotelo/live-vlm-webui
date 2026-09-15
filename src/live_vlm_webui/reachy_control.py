@@ -39,6 +39,15 @@ LIMITS_DEG = {
 # The head may not be twisted more than this away from the body.
 MAX_YAW_DELTA_DEG = 65.0
 
+# Where "centre" parks the antennas. Deliberately not 0.
+#
+# Measured on a Reachy Mini: held at exactly 0 deg one antenna hunts continuously across a ~0.7 deg
+# band (the other is rock steady), which reads as a visible twitch. Held at 20 deg both are
+# perfectly still - 0.00 deg of movement across a 12-sample window. The servo is dithering in its
+# deadband around the null position, so parking a few degrees away from it stops the twitch without
+# being visibly off-centre.
+ANTENNA_PARK_DEG = 5.0
+
 MOTOR_MODES = ("enabled", "disabled", "gravity_compensation")
 INTERPOLATIONS = ("linear", "minjerk", "ease_in_out", "cartoon")
 
@@ -91,6 +100,10 @@ class ReachyControl:
             "ready": bool(backend.get("ready")),
             "motor_mode": backend.get("motor_control_mode"),
             "wireless": status.get("wireless_version"),
+            # Handed to the UI so it can link out to the daemon's own admin pages (/docs, /logs).
+            # The browser reaches the robot directly for these; they are not proxied, because the
+            # point is full unmediated access to the daemon.
+            "admin_base": self.base,
         }
         try:
             full = await self._get("/api/state/full")
@@ -212,8 +225,11 @@ class ReachyControl:
         }
 
     async def center(self, duration: float = 1.0) -> dict:
-        """Return to the neutral pose, antennas down."""
-        res = await self.goto(pitch=0, yaw=0, roll=0, body_yaw=0, antennas=[0, 0],
-                              duration=duration)
+        """Return to the neutral pose, antennas parked just off zero (see ANTENNA_PARK_DEG)."""
+        res = await self.goto(
+            pitch=0, yaw=0, roll=0, body_yaw=0,
+            antennas=[ANTENNA_PARK_DEG, ANTENNA_PARK_DEG],
+            duration=duration,
+        )
         res["message"] = "centering"
         return res
