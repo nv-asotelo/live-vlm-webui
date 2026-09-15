@@ -2395,19 +2395,19 @@ limitations under the License.
                     </div>
 
                     <div class="form-group">
-                        <label>Look</label>
+                        <label>Look (head rotation)</label>
                         <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:6px; max-width:230px;">
                             <span></span>
-                            <button onclick="reachyNudge(0, 12)" title="look up">▲</button>
+                            <button onclick="reachyNudge({pitch:-12})" title="look up">▲</button>
                             <span></span>
-                            <button onclick="reachyNudge(20, 0)" title="look left">◀</button>
-                            <button onclick="reachyPost('/api/reachy/center')" title="centre">◎</button>
-                            <button onclick="reachyNudge(-20, 0)" title="look right">▶</button>
+                            <button onclick="reachyNudge({yaw:20})" title="look left">◀</button>
+                            <button onclick="reachyPost('/api/reachy/center')" title="centre all axes">◎</button>
+                            <button onclick="reachyNudge({yaw:-20})" title="look right">▶</button>
                             <span></span>
-                            <button onclick="reachyNudge(0, -12)" title="look down">▼</button>
+                            <button onclick="reachyNudge({pitch:12})" title="look down">▼</button>
                             <span></span>
                         </div>
-                        <div class="input-hint">Each press nudges from the current pose. ◎ re-centres.</div>
+                        <div class="input-hint">Nudges from the current pose. ◎ re-centres every axis.</div>
                     </div>
 
                     <div class="form-group">
@@ -2417,10 +2417,17 @@ limitations under the License.
                                onchange="reachyGoto({yaw: parseFloat(this.value)})">
                     </div>
                     <div class="form-group">
-                        <label>Head pitch <span id="reachyPitchVal" class="hint">0°</span></label>
+                        <label>Head pitch <span id="reachyPitchVal" class="hint">0°</span>
+                            <span class="hint">(+ is down)</span></label>
                         <input type="range" id="reachyPitch" min="-40" max="40" value="0" step="5"
                                oninput="document.getElementById('reachyPitchVal').textContent=this.value+'°'"
                                onchange="reachyGoto({pitch: parseFloat(this.value)})">
+                    </div>
+                    <div class="form-group">
+                        <label>Head roll <span id="reachyRollVal" class="hint">0°</span></label>
+                        <input type="range" id="reachyRoll" min="-40" max="40" value="0" step="5"
+                               oninput="document.getElementById('reachyRollVal').textContent=this.value+'°'"
+                               onchange="reachyGoto({roll: parseFloat(this.value)})">
                     </div>
                     <div class="form-group">
                         <label>Body yaw <span id="reachyBodyVal" class="hint">0°</span></label>
@@ -2428,6 +2435,26 @@ limitations under the License.
                                oninput="document.getElementById('reachyBodyVal').textContent=this.value+'°'"
                                onchange="reachyGoto({body_yaw: parseFloat(this.value)})">
                     </div>
+
+                    <div class="form-group">
+                        <label>Head position (translation)</label>
+                        <div class="input-hint" style="margin-bottom:8px;">Lifts and shifts the head on its
+                            platform — use <b>Z</b> to raise the head so it clears the body before turning.
+                            Travel is small and the axes are coupled; limits are the measured usable range.</div>
+                        <label>Z up/down <span id="reachyZVal" class="hint">0 mm</span></label>
+                        <input type="range" id="reachyZ" min="-10" max="20" value="0" step="1"
+                               oninput="document.getElementById('reachyZVal').textContent=this.value+' mm'"
+                               onchange="reachyGoto({z: parseFloat(this.value)})">
+                        <label style="margin-top:8px;">X fwd/back <span id="reachyXVal" class="hint">0 mm</span></label>
+                        <input type="range" id="reachyX" min="-15" max="15" value="0" step="1"
+                               oninput="document.getElementById('reachyXVal').textContent=this.value+' mm'"
+                               onchange="reachyGoto({x: parseFloat(this.value)})">
+                        <label style="margin-top:8px;">Y left/right <span id="reachyYVal" class="hint">0 mm</span></label>
+                        <input type="range" id="reachyY" min="-20" max="20" value="0" step="1"
+                               oninput="document.getElementById('reachyYVal').textContent=this.value+' mm'"
+                               onchange="reachyGoto({y: parseFloat(this.value)})">
+                    </div>
+
                     <div class="form-group">
                         <label>Antennas <span id="reachyAntVal" class="hint">10°</span></label>
                         <input type="range" id="reachyAnt" min="-90" max="90" value="10" step="5"
@@ -3635,12 +3662,14 @@ After commands, explain: obstacles detected, clearance margins, goal inference, 
         }
 
         // Nudge relative to the last known pose, so repeated presses accumulate.
-        function reachyNudge(dYaw, dPitch) {
-            const next = {
-                yaw: (reachyPose.yaw || 0) + dYaw,
-                pitch: (reachyPose.pitch || 0) + dPitch,
-            };
-            reachyPose.yaw = next.yaw; reachyPose.pitch = next.pitch;
+        // Note the caller passes robot-convention values: positive pitch tilts DOWN, so the "up"
+        // button sends a negative delta.
+        function reachyNudge(delta) {
+            const next = {};
+            for (const [k, dv] of Object.entries(delta)) {
+                next[k] = (reachyPose[k] || 0) + dv;
+                reachyPose[k] = next[k];
+            }
             return reachyGoto(next);
         }
 
@@ -3675,16 +3704,21 @@ After commands, explain: obstacles detected, clearance margins, goal inference, 
                 }
 
                 // Reflect the real pose in the sliders, so they never lie about where the robot is.
-                const set = (id, v, lbl) => {
+                const set = (id, v, lbl, unit) => {
                     const el = document.getElementById(id);
                     if (el && document.activeElement !== el && v !== undefined && v !== null) {
                         el.value = Math.round(v);
-                        document.getElementById(lbl).textContent = Math.round(v) + '°';
+                        document.getElementById(lbl).textContent = Math.round(v) + (unit || '°');
                     }
                 };
                 set('reachyYaw', p.yaw, 'reachyYawVal');
                 set('reachyPitch', p.pitch, 'reachyPitchVal');
+                set('reachyRoll', p.roll, 'reachyRollVal');
                 set('reachyBody', st.body_yaw_deg, 'reachyBodyVal');
+                const mm = st.pos_mm || {};
+                set('reachyZ', mm.z, 'reachyZVal', ' mm');
+                set('reachyX', mm.x, 'reachyXVal', ' mm');
+                set('reachyY', mm.y, 'reachyYVal', ' mm');
             } catch (e) { /* panel simply stays as it was */ }
         }
 

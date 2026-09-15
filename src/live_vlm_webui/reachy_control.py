@@ -37,6 +37,19 @@ LIMITS_DEG = {
     "body_yaw": (-160.0, 160.0),
     "antenna": (-150.0, 150.0),
 }
+# Head translation limits, in millimetres, measured on the robot by commanding each axis and
+# reading back what it achieved:
+#   z: 10 -> 7.7, 20 -> 18.2, 30 -> 21.3 (saturated)   so useful travel ends near 20
+#   x: 10 -> 9.7, 20 -> 16.6 (saturating)              so useful travel ends near 15
+#   y: 10 -> 12.7, 20 -> 23.8 (tracking)               so 20 is comfortably inside
+# This is a Stewart platform, so the axes are coupled: commanding z alone also shifts x and y by a
+# few mm. The limits below keep commands inside the range where the platform actually follows.
+LIMITS_MM = {
+    "x": (-15.0, 15.0),
+    "y": (-20.0, 20.0),
+    "z": (-10.0, 20.0),
+}
+
 # The head may not be twisted more than this away from the body.
 MAX_YAW_DELTA_DEG = 65.0
 
@@ -93,7 +106,7 @@ class ReachyControl:
 
     @staticmethod
     def _clamp(value: float, key: str) -> tuple[float, bool]:
-        lo, hi = LIMITS_DEG[key]
+        lo, hi = (LIMITS_MM if key in LIMITS_MM else LIMITS_DEG)[key]
         clamped = max(lo, min(hi, value))
         return clamped, clamped != value
 
@@ -123,6 +136,7 @@ class ReachyControl:
                 k: round(math.degrees(float(pose.get(k, 0.0))), 1)
                 for k in ("roll", "pitch", "yaw")
             }
+            out["pos_mm"] = {k: round(float(pose.get(k, 0.0)) * 1000.0, 1) for k in ("x", "y", "z")}
             out["body_yaw_deg"] = round(math.degrees(float(full.get("body_yaw") or 0.0)), 1)
             out["antennas_deg"] = [
                 round(math.degrees(float(a)), 1) for a in (full.get("antennas_position") or [])
@@ -178,10 +192,19 @@ class ReachyControl:
         roll: Optional[float] = None,
         body_yaw: Optional[float] = None,
         antennas: Optional[list] = None,
+        x: Optional[float] = None,
+        y: Optional[float] = None,
+        z: Optional[float] = None,
         duration: float = 1.0,
         interpolation: str = "minjerk",
     ) -> dict:
-        """Move the head/body/antennas. Angles in DEGREES; converted to radians for the daemon."""
+        """Move the head. Angles in DEGREES, translation in MILLIMETRES.
+
+        Sign conventions are the robot's own, not flattened for convenience:
+        positive pitch tilts the head DOWN (verified from the camera: +25 deg pitch moved the
+        scene up 80 px in frame). Callers wanting "look up" send negative pitch. Translation is
+        converted to metres for the daemon, which is what XYZRPYPose expects.
+        """
         if interpolation not in INTERPOLATIONS:
             raise ValueError(f"interpolation must be one of {', '.join(INTERPOLATIONS)}")
 
@@ -193,6 +216,7 @@ class ReachyControl:
         current = await self.state()
         cur_pose = current.get("pose_deg") or {}
         cur_body = current.get("body_yaw_deg") or 0.0
+        cur_pos = current.get("pos_mm") or {}
 
         # With motors disabled the daemon accepts a move and returns success, but nothing turns.
         # Reporting "moving" for a command that cannot move is worse than refusing it: the robot
@@ -208,6 +232,19 @@ class ReachyControl:
         yaw = cur_pose.get("yaw", 0.0) if yaw is None else float(yaw)
         roll = cur_pose.get("roll", 0.0) if roll is None else float(roll)
         body = cur_body if body_yaw is None else float(body_yaw)
+        tx = cur_pos.get("x", 0.0) if x is None else float(x)
+        ty = cur_pos.get("y", 0.0) if y is None else float(y)
+        tz = cur_pos.get("z", 0.0) if z is None else float(z)
+        for axis, val in (("x", tx), ("y", ty), ("z", tz)):
+            clamped, hit = self._clamp(val, axis)
+            if hit:
+                notes.append(f"{axis} clamped to {clamped:g} mm")
+            if axis == "x":
+                tx = clamped
+            elif axis == "y":
+                ty = clamped
+            else:
+                tz = clamped
 
         for name, val in (("pitch", pitch), ("roll", roll), ("yaw", yaw), ("body_yaw", body)):
             clamped, hit = self._clamp(val, name)
@@ -232,7 +269,7 @@ class ReachyControl:
 
         payload: dict = {
             "head_pose": {
-                "x": 0.0, "y": 0.0, "z": 0.0,
+                "x": tx / 1000.0, "y": ty / 1000.0, "z": tz / 1000.0,
                 "roll": math.radians(roll),
                 "pitch": math.radians(pitch),
                 "yaw": math.radians(yaw),
@@ -256,6 +293,7 @@ class ReachyControl:
         return {
             "message": "moving",
             "applied_deg": {"pitch": pitch, "yaw": yaw, "roll": roll, "body_yaw": body},
+            "applied_mm": {"x": tx, "y": ty, "z": tz},
             "notes": notes,
         }
 
@@ -267,7 +305,7 @@ class ReachyControl:
         the daemon exposes no servo gain or deadband setting to tune.
         """
         res = await self.goto(
-            pitch=0, yaw=0, roll=0, body_yaw=0,
+            pitch=0, yaw=0, roll=0, body_yaw=0, x=0, y=0, z=0,
             antennas=[ANTENNA_PARK_DEG, ANTENNA_PARK_DEG],
             duration=duration,
         )

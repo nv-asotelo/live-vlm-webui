@@ -1205,6 +1205,7 @@ async def reachy_goto(request):
     try:
         return await _reachy_action(ctl.goto(
             pitch=num("pitch"), yaw=num("yaw"), roll=num("roll"), body_yaw=num("body_yaw"),
+            x=num("x"), y=num("y"), z=num("z"),
             antennas=body.get("antennas"),
             duration=float(body.get("duration", 1.0)),
             interpolation=body.get("interpolation", "minjerk"),
