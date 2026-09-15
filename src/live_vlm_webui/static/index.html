@@ -2436,6 +2436,18 @@ limitations under the License.
                     </div>
 
                     <div class="form-group">
+                        <label>Antenna power</label>
+                        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                            <button onclick="reachyPost('/api/reachy/antenna/left/off')">Left off</button>
+                            <button onclick="reachyPost('/api/reachy/antenna/right/off')">Right off</button>
+                            <button onclick="reachyPost('/api/reachy/antenna/both/off')">Both off</button>
+                            <button onclick="reachyPost('/api/reachy/antenna/both/on')">Restore</button>
+                        </div>
+                        <div class="input-hint">Cuts torque to the antenna servos only — the head keeps
+                            holding position. A hunting servo twitches; unpowered it just goes slack.</div>
+                    </div>
+
+                    <div class="form-group">
                         <label>Robot admin</label>
                         <div style="display:flex; gap:6px; flex-wrap:wrap;">
                             <a class="chip" id="reachyDocsLink" href="#" target="_blank" rel="noreferrer">API explorer</a>

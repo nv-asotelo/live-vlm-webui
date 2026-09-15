@@ -1178,6 +1178,15 @@ async def reachy_motors(request):
     return await _reachy_action(_require_reachy().set_motor_mode(mode))
 
 
+async def reachy_antenna_power(request):
+    """Cut/restore torque to an antenna. side: left|right|both, state: on|off."""
+    side = request.match_info["side"]
+    state = request.match_info["state"].lower()
+    if state not in ("on", "off"):
+        return web.json_response({"error": "state must be on or off"}, status=400)
+    return await _reachy_action(_require_reachy().set_antenna_power(side, state == "on"))
+
+
 async def reachy_goto(request):
     """Body: any of pitch/yaw/roll/body_yaw (degrees), antennas [l, r], duration, interpolation.
 
@@ -1301,6 +1310,7 @@ async def create_app(test_mode=False):
     app.router.add_post("/api/reachy/center", reachy_center)
     app.router.add_post("/api/reachy/goto", reachy_goto)
     app.router.add_post("/api/reachy/motors/{mode}", reachy_motors)
+    app.router.add_post("/api/reachy/antenna/{side}/{state}", reachy_antenna_power)
 
     # Push-source endpoints (externally supplied frames)
     app.router.add_post("/api/push/start", push_start)

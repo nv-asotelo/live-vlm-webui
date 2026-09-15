@@ -18,6 +18,7 @@ SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 """
 
+import asyncio
 import logging
 import math
 from typing import Optional
@@ -41,6 +42,14 @@ MAX_YAW_DELTA_DEG = 65.0
 
 
 MOTOR_MODES = ("enabled", "disabled", "gravity_compensation")
+
+# Per-motor torque is not in the daemon's REST API - only a global mode switch is. It is reachable
+# over the SDK's WebSocket channel, which takes plain JSON, so this speaks that directly rather
+# than pulling in the SDK (whose install drags the GStreamer/WebRTC media stack along with it).
+# Names come from the SDK's hardware_config.yaml: body_rotation, stewart_1..6, left_antenna,
+# right_antenna.
+ANTENNA_MOTORS = {"left": ["left_antenna"], "right": ["right_antenna"],
+                  "both": ["left_antenna", "right_antenna"]}
 INTERPOLATIONS = ("linear", "minjerk", "ease_in_out", "cartoon")
 
 
@@ -127,6 +136,30 @@ class ReachyControl:
             raise ValueError(f"mode must be one of {', '.join(MOTOR_MODES)}")
         await self._post(f"/api/motors/set_mode/{mode}")
         return {"message": f"motors {mode}"}
+
+    async def set_antenna_power(self, side: str, on: bool) -> dict:
+        """Cut or restore torque to one antenna (or both) without touching the head.
+
+        A powered servo that is hunting will twitch; with torque off it simply goes slack, and the
+        head keeps holding position because only these motor ids are addressed.
+        """
+        side = (side or "").lower()
+        if side not in ANTENNA_MOTORS:
+            raise ValueError(f"side must be one of {', '.join(ANTENNA_MOTORS)}")
+
+        ids = ANTENNA_MOTORS[side]
+        ws_url = self.base.replace("https://", "wss://").replace("http://", "ws://") + "/ws/sdk"
+        payload = {"type": "set_torque", "on": bool(on), "ids": ids}
+
+        async with aiohttp.ClientSession(timeout=self.timeout) as s:
+            async with s.ws_connect(ws_url) as ws:
+                await ws.send_json(payload)
+                # The daemon does not acknowledge commands; give it a moment on the wire before
+                # the connection closes underneath it.
+                await asyncio.sleep(0.3)
+
+        return {"message": f"{side} antenna power {'restored' if on else 'cut'}",
+                "motors": ids, "torque": bool(on)}
 
     async def goto(
         self,
