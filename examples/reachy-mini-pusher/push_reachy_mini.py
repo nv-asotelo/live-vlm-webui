@@ -146,7 +146,7 @@ def _stream_frames(mini, session, url, args, encode_params, interval, totals) ->
     while True:
         t0 = time.time()
         try:
-            # (height, width, 3) uint8 RGB, or None.
+            # (height, width, 3) uint8 BGR, or None.
             # None is normal, not an error: the WebRTC stream needs a moment to negotiate, and
             # afterwards get_frame() returns whatever the last decoded frame was -- polling
             # faster than the stream delivers simply yields None. Treat it as "not yet".
@@ -169,7 +169,10 @@ def _stream_frames(mini, session, url, args, encode_params, interval, totals) ->
                 h = int(frame.shape[0] * args.width / frame.shape[1])
                 frame = cv2.resize(frame, (args.width, h), interpolation=cv2.INTER_AREA)
 
-            ok, buf = cv2.imencode(".jpg", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR), encode_params)
+            # No colour conversion: the SDK already hands back BGR, which is what imencode
+            # expects. Converting "RGB to BGR" here swapped red and blue and tinted the whole
+            # feed. MediaManager.get_frame() documents the format; the HF page does not.
+            ok, buf = cv2.imencode(".jpg", frame, encode_params)
             if not ok:
                 raise RuntimeError("JPEG encode failed")
 
