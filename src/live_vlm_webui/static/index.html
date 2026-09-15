@@ -4287,9 +4287,28 @@ After commands, explain: obstacles detected, clearance margins, goal inference, 
                             statusDiv.style.display = 'block';
                             statusDiv.style.color = s.connected ? '#76b900' : '#ff6b35';
                             const res = (s.width && s.height) ? `${s.width}×${s.height}` : '—';
-                            statusDiv.textContent = s.connected
-                                ? `● receiving ${res} · ${s.frames_received} frames · ${s.fps || '—'} fps · ${s.frames_dropped} dropped`
-                                : `○ no frames yet — POST to the URL above`;
+
+                            // "No frames yet" is misleading when frames ARE arriving, just on a
+                            // different session id. That happens whenever the page is opened
+                            // without ?session=<name> while a headless pusher targets a fixed one:
+                            // the tab mints a random UUID and watches an empty session forever,
+                            // with no hint that the feed is alive next door. Name the other
+                            // session and offer a one-click switch.
+                            const others = (data.streams || []).filter(
+                                x => x.session_id !== sessionId && x.frames_received > 0);
+                            if (s.connected) {
+                                statusDiv.textContent =
+                                    `● receiving ${res} · ${s.frames_received} frames · ${s.fps || '—'} fps · ${s.frames_dropped} dropped`;
+                            } else if (others.length) {
+                                const o = others[0];
+                                statusDiv.style.color = '#ffb020';
+                                statusDiv.innerHTML =
+                                    `⚠️ nothing on <b>this</b> session — but session ` +
+                                    `<b>${o.session_id}</b> is receiving ${o.fps || '—'} fps. ` +
+                                    `<a href="?session=${encodeURIComponent(o.session_id)}">Switch to it</a>`;
+                            } else {
+                                statusDiv.textContent = `○ no frames yet — POST to the URL above`;
+                            }
 
                             if (s.connected) {
                                 updateStatus('Streaming', 'connected');
