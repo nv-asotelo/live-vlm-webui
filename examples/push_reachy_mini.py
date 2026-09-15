@@ -10,8 +10,16 @@ Usage:
     pip install reachy-mini opencv-python-headless requests
     python push_reachy_mini.py --server http://localhost:8090
 
-Then open the WebUI, pick the "Push Source" tab, and press Start. Frames from this script appear
-in the preview and are analysed by whichever VLM the server is configured against.
+    # Server on another host, serving its default self-signed HTTPS cert:
+    python push_reachy_mini.py --server https://192.168.1.50:8090 --insecure \
+        --session-id <id from the WebUI> --fps 5
+
+Open the WebUI first, pick the "Push Source" tab and press Start: the tab shows the exact push
+URL including the session id this script must target. Frames then appear in the preview and are
+analysed by whichever VLM the server is configured against.
+
+The session id matters. Each browser tab gets its own, so leaving this at "default" while the tab
+is using a generated id means the frames are accepted and analysed but that tab shows nothing.
 
 SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 SPDX-License-Identifier: Apache-2.0
@@ -59,6 +67,13 @@ def main() -> None:
         choices=["localhost_only", "network"],
         help="force the SDK connection mode instead of auto-detecting",
     )
+    p.add_argument(
+        "--insecure",
+        action="store_true",
+        help="skip TLS verification. live-vlm-webui serves HTTPS with a self-signed certificate "
+        "by default, which requests rejects, so this is needed for any https:// server that has "
+        "not been given a real certificate.",
+    )
     args = p.parse_args()
 
     url = f"{args.server.rstrip('/')}/api/push/frame?session_id={args.session_id}&source_name=reachy-mini"
@@ -70,6 +85,12 @@ def main() -> None:
         kwargs["connection_mode"] = args.connection_mode
 
     session = requests.Session()
+    session.verify = not args.insecure
+    if args.insecure:
+        import urllib3
+
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
     pushed = failed = 0
 
     print(f"pushing Reachy Mini camera -> {url} at {args.fps} fps")

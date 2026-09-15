@@ -2613,8 +2613,16 @@ After commands, explain: obstacles detected, clearance margins, goal inference, 
         let websocket = null;
         let fadeTimeout = null;
         let lastText = '';
-        // Multi-session: one ID per page/tab; sent in WebSocket and /offer so this tab gets only its VLM output
-        const sessionId = crypto.randomUUID ? crypto.randomUUID() : 'tab-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+        // Multi-session: one ID per page/tab; sent in WebSocket and /offer so this tab gets only its VLM output.
+        //
+        // ?session=<name> pins it. A push client has to target the same session as the tab that
+        // wants to watch it, and a per-tab random UUID cannot be known in advance -- it has to be
+        // copied out of the UI by hand every time the page reloads. A named session makes the
+        // pairing a fixed, bookmarkable URL (…/?session=reachy) that a headless pusher can hardcode.
+        const sessionParam = new URLSearchParams(window.location.search).get('session');
+        const sessionId = (sessionParam && sessionParam.trim())
+            ? sessionParam.trim()
+            : (crypto.randomUUID ? crypto.randomUUID() : 'tab-' + Date.now() + '-' + Math.random().toString(36).slice(2));
         let isAnalysisRunning = false;
         let selectedCameraId = null;
         let rtspSessionId = 'default';  // For RTSP mode
