@@ -40,6 +40,16 @@ LIMITS_DEG = {
 # The head may not be twisted more than this away from the body.
 MAX_YAW_DELTA_DEG = 65.0
 
+# Where "centre" parks the antennas, and the UI's default.
+#
+# Not 0: at rest an antenna servo hunts and visibly twitches, and holding a few degrees off the
+# null position settles it. That is an observation of the physical robot, not of the telemetry -
+# polling /api/state/full tops out around 2.5 Hz against a 50 Hz control loop, which is far too
+# slow to characterise a twitch and will alias it. An earlier attempt to verify this from sampled
+# positions "disproved" it and the change was reverted; the robot says otherwise, so the robot
+# wins. Visually 5 deg is indistinguishable from level.
+ANTENNA_PARK_DEG = 5.0
+
 
 MOTOR_MODES = ("enabled", "disabled", "gravity_compensation")
 
@@ -252,15 +262,14 @@ class ReachyControl:
     async def center(self, duration: float = 1.0) -> dict:
         """Return to the neutral pose, antennas down.
 
-        Note on antenna twitch: on this unit one antenna dithers intermittently across roughly
-        0.6-1.0 deg while the other never moves. Measured across commanded angles 0/5/10/15/20/25
-        and across Stiff and Soft motor modes, it does not correlate with either - it appears and
-        disappears at the same angle in the same mode. Only removing power (Limp) reliably stops
-        it, at the cost of the head going compliant. There is no servo gain or deadband setting in
-        the daemon's API to tune, so nothing here can fix it; parking the antennas elsewhere was
-        tried and does not help.
+        Antennas park at ANTENNA_PARK_DEG rather than 0 to keep them out of the position where
+        they twitch. If the twitch still appears, cut antenna torque with set_antenna_power();
+        the daemon exposes no servo gain or deadband setting to tune.
         """
-        res = await self.goto(pitch=0, yaw=0, roll=0, body_yaw=0, antennas=[0, 0],
-                              duration=duration)
+        res = await self.goto(
+            pitch=0, yaw=0, roll=0, body_yaw=0,
+            antennas=[ANTENNA_PARK_DEG, ANTENNA_PARK_DEG],
+            duration=duration,
+        )
         res["message"] = "centering"
         return res
