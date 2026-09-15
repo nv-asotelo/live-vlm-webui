@@ -33,6 +33,10 @@ import time
 import cv2
 import requests
 
+# Reconnect when no frame has arrived for this long: a dead WebRTC stream is silent, not noisy.
+STALL_TIMEOUT = 20.0
+RECONNECT_DELAY = 3.0
+
 try:
     from reachy_mini import ReachyMini
 except ImportError:
@@ -100,52 +104,105 @@ def main() -> None:
 
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    pushed = failed = empty = 0
+    totals = {"pushed": 0, "failed": 0}
 
     print(f"pushing Reachy Mini camera -> {url} at {args.fps} fps")
-    with ReachyMini(**kwargs) as mini:
-        while True:
-            t0 = time.time()
-            try:
-                # (height, width, 3) uint8 RGB, or None.
-                # None is normal, not an error: the WebRTC stream needs a moment to negotiate, and
-                # afterwards get_frame() returns whatever the last decoded frame was -- polling
-                # faster than the stream delivers simply yields None. Treat it as "not yet".
-                frame = mini.media.get_frame()
-                if frame is None:
-                    empty += 1
-                    if empty in (20, 100) or empty % 300 == 0:
-                        print(f"  waiting for video... ({empty} empty polls, {pushed} pushed)")
-                    time.sleep(0.05)
+
+    # Outer loop: rebuild the SDK connection when the video stream dies.
+    #
+    # A WebRTC stream is not guaranteed to live as long as the process. When it drops, the SDK does
+    # not raise -- get_frame() simply returns None forever, so a single-pass loop sits there
+    # silently pushing nothing and looks identical to a camera that is merely slow to start. The
+    # stall watchdog below turns that silence into a reconnect.
+    while True:
+        try:
+            with ReachyMini(**kwargs) as mini:
+                print("  connected to robot")
+                if not _stream_frames(mini, session, url, args, encode_params, interval, totals):
+                    # Returned False: the stream stalled. Fall through and reconnect.
+                    print(f"  reconnecting to robot in {RECONNECT_DELAY}s ...")
+                    time.sleep(RECONNECT_DELAY)
                     continue
-                empty = 0
+                return
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            print(f"  connection lost: {type(e).__name__}: {e}")
+            print(f"  reconnecting to robot in {RECONNECT_DELAY}s ...")
+            time.sleep(RECONNECT_DELAY)
 
-                if args.width and frame.shape[1] > args.width:
-                    h = int(frame.shape[0] * args.width / frame.shape[1])
-                    frame = cv2.resize(frame, (args.width, h), interpolation=cv2.INTER_AREA)
 
-                ok, buf = cv2.imencode(
-                    ".jpg", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR), encode_params
+def _stream_frames(mini, session, url, args, encode_params, interval, totals) -> bool:
+    """Pump frames until the stream stalls. Returns False if a reconnect is needed.
+
+    A push failure against the WebUI is NOT a reason to reconnect to the robot: the server may
+    simply be restarting, and the right response is to keep trying while the camera stays healthy.
+    Only a lack of *frames* means the robot side is broken.
+    """
+    empty = 0
+    last_frame_at = time.time()
+    warned_http = False
+
+    while True:
+        t0 = time.time()
+        try:
+            # (height, width, 3) uint8 RGB, or None.
+            # None is normal, not an error: the WebRTC stream needs a moment to negotiate, and
+            # afterwards get_frame() returns whatever the last decoded frame was -- polling
+            # faster than the stream delivers simply yields None. Treat it as "not yet".
+            frame = mini.media.get_frame()
+            if frame is None:
+                empty += 1
+                stalled_for = time.time() - last_frame_at
+                if stalled_for > STALL_TIMEOUT:
+                    print(f"  no video for {stalled_for:.0f}s - the stream looks dead")
+                    return False
+                if empty in (20, 200) or empty % 600 == 0:
+                    print(f"  waiting for video... ({stalled_for:.0f}s, {totals['pushed']} pushed)")
+                time.sleep(0.05)
+                continue
+
+            empty = 0
+            last_frame_at = time.time()
+
+            if args.width and frame.shape[1] > args.width:
+                h = int(frame.shape[0] * args.width / frame.shape[1])
+                frame = cv2.resize(frame, (args.width, h), interpolation=cv2.INTER_AREA)
+
+            ok, buf = cv2.imencode(".jpg", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR), encode_params)
+            if not ok:
+                raise RuntimeError("JPEG encode failed")
+
+            r = session.post(
+                url, data=buf.tobytes(), headers={"Content-Type": "image/jpeg"}, timeout=10
+            )
+            if r.status_code == 409:
+                # The session was stopped in the UI. Re-create it and carry on, so pressing
+                # Start again in the browser is enough to bring the feed back.
+                session.post(
+                    url.split("/api/push/frame")[0] + "/api/push/start",
+                    json={"session_id": args.session_id, "source_name": "reachy-mini"},
+                    timeout=10,
                 )
-                if not ok:
-                    raise RuntimeError("JPEG encode failed")
+                continue
+            r.raise_for_status()
 
-                r = session.post(
-                    url, data=buf.tobytes(), headers={"Content-Type": "image/jpeg"}, timeout=10
-                )
-                r.raise_for_status()
-                pushed += 1
-                if pushed % 25 == 0:
-                    print(f"  pushed {pushed} frames ({failed} failed)")
+            totals["pushed"] += 1
+            warned_http = False
+            if totals["pushed"] % 50 == 0:
+                print(f"  pushed {totals['pushed']} frames ({totals['failed']} failed)")
 
-            except KeyboardInterrupt:
-                raise
-            except Exception as e:
-                failed += 1
-                # Keep going: a dropped frame is not a reason to stop a live feed.
-                print(f"  frame skipped: {type(e).__name__}: {e}")
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            totals["failed"] += 1
+            # The WebUI being down is transient and self-corrects; say so once rather than
+            # printing the same stack every frame.
+            if not warned_http:
+                print(f"  push failing: {type(e).__name__}: {e}")
+                warned_http = True
 
-            time.sleep(max(0.0, interval - (time.time() - t0)))
+        time.sleep(max(0.0, interval - (time.time() - t0)))
 
 
 if __name__ == "__main__":

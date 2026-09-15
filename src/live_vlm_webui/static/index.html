@@ -2343,7 +2343,16 @@ limitations under the License.
                                 <code>{"image": "&lt;base64&gt;"}</code>.
                                 <a href="https://github.com/nv-asotelo/live-vlm-webui/blob/main/docs/usage/push-sources.md" target="_blank" style="color: var(--accent-color, #76b900); text-decoration: underline;">Docs &amp; examples</a>
                             </div>
-                            <div id="pushStatus" class="input-hint" style="margin-bottom: 12px; display: none;"></div>
+                            <div id="pushStatus" class="input-hint" style="margin-bottom: 8px; display: none;"></div>
+                            <button id="restartPushBtn" onclick="restartPushFeed()" style="margin-bottom: 12px;">
+                                <i data-lucide="rotate-ccw" style="width: 13px; height: 13px; margin-right: 5px;"></i>
+                                Restart feed
+                            </button>
+                            <div class="input-hint" style="margin-bottom: 12px;">
+                                Clears the server-side session and starts a fresh one, dropping any
+                                stale frame and resetting the counters. The pushing client keeps
+                                running — it re-creates the session on its next frame.
+                            </div>
                         </div>
                     </div>
                     <div class="form-group">
@@ -4304,6 +4313,59 @@ After commands, explain: obstacles detected, clearance margins, goal inference, 
                 statusDiv.style.color = '#ff6b35';
                 statusDiv.textContent = `⚠️ ${error.message}`;
                 stop();
+            }
+        }
+
+        // Restart just the push session: stop it server-side, start it again, and let the preview
+        // re-attach. This clears a session that is holding a stale frame or wedged counters without
+        // disturbing the client that is pushing into it.
+        async function restartPushFeed() {
+            const btn = document.getElementById('restartPushBtn');
+            btn.disabled = true;
+            const statusDiv = document.getElementById('pushStatus');
+            try {
+                updateStatus('Restarting feed...', 'processing');
+                statusDiv.style.display = 'block';
+                statusDiv.style.color = '';
+                statusDiv.textContent = 'restarting…';
+
+                // Drop the preview while the session is being rebuilt, so a stale frame is not
+                // left on screen looking like a live one.
+                if (pushPreviewTimer) { clearInterval(pushPreviewTimer); pushPreviewTimer = null; }
+                const preview = document.getElementById('pushPreview');
+                if (preview) preview.removeAttribute('src');
+
+                await fetch('/api/push/stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId }),
+                });
+
+                const sourceName = (document.getElementById('pushSourceName').value || 'push').trim();
+                const r = await fetch('/api/push/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId, source_name: sourceName }),
+                });
+                if (!r.ok) {
+                    const err = await r.json().catch(() => ({}));
+                    throw new Error(err.error || `HTTP ${r.status}`);
+                }
+
+                // Re-arm the preview poll; the status poller re-attaches it once frames land.
+                pushPreviewTimer = setInterval(() => {
+                    preview.src = `/api/push/latest.jpg?session_id=${sessionId}&t=${Date.now()}`;
+                }, 200);
+
+                statusDiv.textContent = '○ session restarted — waiting for frames';
+                updateStatus('Waiting for frames...', 'processing');
+            } catch (e) {
+                statusDiv.style.display = 'block';
+                statusDiv.style.color = '#ff6b35';
+                statusDiv.textContent = `⚠️ restart failed: ${e.message}`;
+                updateStatus('Restart failed', 'disconnected');
+            } finally {
+                btn.disabled = false;
             }
         }
 
