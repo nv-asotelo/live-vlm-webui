@@ -47,8 +47,8 @@ MAX_YAW_DELTA_DEG = 65.0
 # polling /api/state/full tops out around 2.5 Hz against a 50 Hz control loop, which is far too
 # slow to characterise a twitch and will alias it. An earlier attempt to verify this from sampled
 # positions "disproved" it and the change was reverted; the robot says otherwise, so the robot
-# wins. Visually 5 deg is indistinguishable from level.
-ANTENNA_PARK_DEG = 5.0
+# wins. Visually 10 deg is barely off level.
+ANTENNA_PARK_DEG = 10.0
 
 
 MOTOR_MODES = ("enabled", "disabled", "gravity_compensation")
