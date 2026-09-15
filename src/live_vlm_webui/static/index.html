@@ -3631,9 +3631,19 @@ After commands, explain: obstacles detected, clearance margins, goal inference, 
                 reachyPose = Object.assign(reachyPose, st.pose_deg || {},
                                            { body_yaw: st.body_yaw_deg });
                 const p = st.pose_deg || {};
-                reachySay(`${st.ready ? '● awake' : '○ asleep'} · ${st.robot_name || 'reachy'} v${st.version || '?'}`
-                          + ` · motors ${st.motor_mode || '?'}`
-                          + (p.yaw !== undefined ? ` · yaw ${p.yaw}° pitch ${p.pitch}°` : ''));
+                // Motors disabled is the single most likely reason a control "does nothing", so
+                // call it out rather than burying it in the status line.
+                const limp = (st.motor_mode || '').toLowerCase() === 'disabled';
+                if (limp) {
+                    const el = document.getElementById('reachyStatus');
+                    el.innerHTML = '⚠️ <b>motors are disabled</b> — the robot will not move. '
+                                 + 'Press <b>Stiff</b> or <b>Wake</b> first.';
+                    el.style.color = '#ffb020';
+                } else {
+                    reachySay(`${st.ready ? '● awake' : '○ asleep'} · ${st.robot_name || 'reachy'} v${st.version || '?'}`
+                              + ` · motors ${st.motor_mode || '?'}`
+                              + (p.yaw !== undefined ? ` · yaw ${p.yaw}° pitch ${p.pitch}°` : ''));
+                }
 
                 // Reflect the real pose in the sliders, so they never lie about where the robot is.
                 const set = (id, v, lbl) => {

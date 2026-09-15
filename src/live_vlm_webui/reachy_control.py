@@ -146,6 +146,16 @@ class ReachyControl:
         cur_pose = current.get("pose_deg") or {}
         cur_body = current.get("body_yaw_deg") or 0.0
 
+        # With motors disabled the daemon accepts a move and returns success, but nothing turns.
+        # Reporting "moving" for a command that cannot move is worse than refusing it: the robot
+        # sits still while the UI claims it worked, and there is nothing to debug from.
+        if (current.get("motor_mode") or "").lower() == "disabled":
+            raise ValueError(
+                "motors are disabled, so the robot cannot move - press Stiff (or Wake) first"
+            )
+        if (current.get("motor_mode") or "").lower() == "gravity_compensation":
+            notes.append("motors are in Soft mode; the head is compliant and may not hold position")
+
         pitch = cur_pose.get("pitch", 0.0) if pitch is None else float(pitch)
         yaw = cur_pose.get("yaw", 0.0) if yaw is None else float(yaw)
         roll = cur_pose.get("roll", 0.0) if roll is None else float(roll)
