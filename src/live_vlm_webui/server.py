@@ -385,6 +385,17 @@ async def websocket_handler(request):
                                 }
                             )
 
+                    elif data.get("type") == "run_now":
+                        # Apply any edited prompt first, so the forced inference uses what the
+                        # user is looking at rather than the last applied value.
+                        new_prompt = (data.get("prompt") or "").strip()
+                        if new_prompt and svc:
+                            svc.update_prompt(new_prompt, data.get("max_tokens"))
+                        if svc:
+                            svc.request_immediate()
+                            logger.info(f"[{session_id}] Immediate inference requested")
+                        await ws.send_json({"type": "run_now_queued"})
+
                     elif data.get("type") == "update_model":
                         new_model = data.get("model", "").strip()
                         api_base = data.get("api_base", "").strip()

@@ -2419,6 +2419,14 @@ After commands, explain: obstacles detected, clearance margins, goal inference, 
                         <input type="number" id="maxTokens" value="512" min="1" max="4096" step="1">
                         <div class="input-hint">Lower for short answers (Yes/No: ~10), higher for detailed descriptions</div>
                     </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <button id="runNowBtn" onclick="runPromptNow()" style="width: 100%;">
+                            <i data-lucide="zap" style="width: 14px; height: 14px; margin-right: 6px;"></i>
+                            Run prompt now
+                        </button>
+                        <div class="input-hint">Applies the prompt above and analyses the next frame
+                            immediately, without waiting for the frame interval.</div>
+                    </div>
                 </div>
             </div>
 
@@ -3491,6 +3499,41 @@ After commands, explain: obstacles detected, clearance margins, goal inference, 
                 const promptPreview = newPrompt.length > 150 ? newPrompt.substring(0, 150) + '...' : newPrompt;
                 currentPrompt.textContent = `Prompt: ${promptPreview}`;
             }
+        }
+
+        // Force one inference right now, using whatever is currently typed in the editor.
+        async function runPromptNow() {
+            const btn = document.getElementById('runNowBtn');
+            if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+                say_status('Not connected — press Start first');
+                return;
+            }
+            if (!isAnalysisRunning) {
+                say_status('Start a video source first');
+                return;
+            }
+            websocket.send(JSON.stringify({
+                type: 'run_now',
+                prompt: promptText.value.trim(),
+                max_tokens: parseInt(maxTokens.value) || 512,
+            }));
+            // Reflect the prompt in the header bubble, same as applying it normally.
+            const p = promptText.value.trim();
+            if (p) {
+                currentPrompt.textContent = `Prompt: ${p.length > 150 ? p.substring(0,150)+'...' : p}`;
+            }
+            btn.disabled = true;
+            const label = btn.innerHTML;
+            btn.innerHTML = 'Queued — running on next frame…';
+            setTimeout(() => { btn.disabled = false; btn.innerHTML = label;
+                               if (window.lucide) lucide.createIcons(); }, 1200);
+        }
+
+        function say_status(msg) {
+            const btn = document.getElementById('runNowBtn');
+            const label = btn.innerHTML;
+            btn.innerHTML = msg;
+            setTimeout(() => { btn.innerHTML = label; if (window.lucide) lucide.createIcons(); }, 1800);
         }
 
         // Handle preset selection

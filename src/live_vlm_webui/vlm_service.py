@@ -60,6 +60,11 @@ class VLMService:
         self.client = AsyncOpenAI(base_url=api_base, api_key=api_key)
         self.current_response = "Initializing..."
         self.is_processing = False
+        # One-shot request to analyse the next frame regardless of the frame interval. Kept here,
+        # on the per-session service, rather than on the video track: a session's track is rebuilt
+        # for every source type (webcam negotiation, RTSP start, push start) and is not reachable
+        # from the WebSocket handler, whereas this object always is.
+        self._run_now = False
         self._processing_lock = asyncio.Lock()
         self._last_request_payload = None  # For debug: request body (image truncated)
         self._last_response_payload = None  # For debug: API response body
@@ -233,6 +238,17 @@ class VLMService:
             "total_inferences": self.total_inferences,
             "is_processing": self.is_processing,
         }
+
+    def request_immediate(self) -> None:
+        """Ask for the next frame to be analysed without waiting for the frame interval."""
+        self._run_now = True
+
+    def consume_immediate(self) -> bool:
+        """Take the pending request, if any. One press yields exactly one extra inference."""
+        if self._run_now:
+            self._run_now = False
+            return True
+        return False
 
     def update_prompt(self, new_prompt: str, max_tokens: Optional[int] = None) -> None:
         """

@@ -138,7 +138,11 @@ class VideoProcessorTrack(VideoStreamTrack):
             # Only convert to numpy when needed (for VLM processing or first frame)
             # This avoids expensive CPU color conversion on every frame
             interval = self.__class__.process_every_n_frames
-            need_conversion = (self.frame_count % interval == 0) or (self.frame_count == 1)
+            # A "run now" request from the UI fires on the very next frame, whatever the interval.
+            run_now = self.vlm_service.consume_immediate()
+            need_conversion = (
+                run_now or (self.frame_count % interval == 0) or (self.frame_count == 1)
+            )
 
             if need_conversion:
                 t1 = time.time()
@@ -159,12 +163,15 @@ class VideoProcessorTrack(VideoStreamTrack):
                     logger.info(f"First frame received: {img.shape}")
 
                 # Send frame to VLM for analysis (async, non-blocking)
-                if self.frame_count % interval == 0:
+                if run_now or self.frame_count % interval == 0:
                     # Convert to PIL Image for VLM
                     pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
                     # Fire and forget - don't wait for result
                     asyncio.create_task(self.vlm_service.process_frame(pil_img))
-                    logger.info(f"Frame {self.frame_count}: Sending to VLM (interval={interval})")
+                    logger.info(
+                        f"Frame {self.frame_count}: Sending to VLM "
+                        f"({'forced by user' if run_now else f'interval={interval}'})"
+                    )
 
             # Get current response (may be old if VLM is still processing)
             response, is_processing = self.vlm_service.get_current_response()
