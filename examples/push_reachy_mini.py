@@ -28,7 +28,9 @@ SPDX-License-Identifier: Apache-2.0
 
 import argparse
 import sys
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cv2
 import requests
@@ -36,6 +38,51 @@ import requests
 # Reconnect when no frame has arrived for this long: a dead WebRTC stream is silent, not noisy.
 STALL_TIMEOUT = 20.0
 RECONNECT_DELAY = 3.0
+
+# Latest encoded frame, shared with the optional MJPEG server.
+_latest = {"jpeg": None}
+
+
+class _MJPEGHandler(BaseHTTPRequestHandler):
+    """Serve the newest frame as multipart MJPEG.
+
+    Exists so tools that can only consume a stream URL - Frigate/go2rtc, VLC, ffmpeg - can read a
+    camera that otherwise only speaks the Reachy SDK's WebRTC/IPC transports. MJPEG rather than
+    RTSP because it needs no server process: the frames are already JPEG-encoded for pushing, so
+    this is a re-send rather than a re-encode.
+    """
+
+    protocol_version = "HTTP/1.0"
+
+    def log_message(self, *a):  # keep the pusher's stdout readable
+        pass
+
+    def do_GET(self):
+        if self.path.split("?")[0] not in ("/", "/mjpeg", "/stream"):
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            while True:
+                jpeg = _latest["jpeg"]
+                if jpeg:
+                    self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n")
+                    self.wfile.write(f"Content-Length: {len(jpeg)}\r\n\r\n".encode())
+                    self.wfile.write(jpeg)
+                    self.wfile.write(b"\r\n")
+                time.sleep(0.05)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+
+def _serve_mjpeg(port: int) -> None:
+    srv = ThreadingHTTPServer(("0.0.0.0", port), _MJPEGHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    print(f"  MJPEG stream on http://0.0.0.0:{port}/mjpeg")
+
 
 try:
     from reachy_mini import ReachyMini
@@ -79,6 +126,13 @@ def main() -> None:
         help="force the SDK connection mode instead of auto-detecting",
     )
     p.add_argument(
+        "--mjpeg-port",
+        type=int,
+        default=0,
+        help="also serve the frames as MJPEG on this port, so Frigate/go2rtc, VLC or ffmpeg can "
+        "read the camera as a plain stream URL. 0 disables it.",
+    )
+    p.add_argument(
         "--insecure",
         action="store_true",
         help="skip TLS verification. live-vlm-webui serves HTTPS with a self-signed certificate "
@@ -106,6 +160,8 @@ def main() -> None:
 
     totals = {"pushed": 0, "failed": 0}
 
+    if args.mjpeg_port:
+        _serve_mjpeg(args.mjpeg_port)
     print(f"pushing Reachy Mini camera -> {url} at {args.fps} fps")
 
     # Outer loop: rebuild the SDK connection when the video stream dies.
@@ -175,6 +231,7 @@ def _stream_frames(mini, session, url, args, encode_params, interval, totals) ->
             ok, buf = cv2.imencode(".jpg", frame, encode_params)
             if not ok:
                 raise RuntimeError("JPEG encode failed")
+            _latest["jpeg"] = buf.tobytes()
 
             r = session.post(
                 url, data=buf.tobytes(), headers={"Content-Type": "image/jpeg"}, timeout=10
