@@ -29,6 +29,24 @@ limitations under the License.
     <link rel="manifest" href="favicon/site.webmanifest">
 
     <style>
+        /* Reachy controller: the robot's desktop app arranges its controls as antennas, head
+           X/Y + Z, pitch/yaw, roll and body yaw. Same arrangement here, in this page's colours. */
+        .rc-sec { font-size: 11px; text-transform: uppercase; letter-spacing: .09em;
+                  color: var(--text-muted); margin: 14px 0 6px; }
+        .rc-row { display: flex; gap: 8px; flex-wrap: wrap; }
+        .rc-cell { flex: 1 1 190px; min-width: 0; background: var(--bg-tertiary);
+                   border: 1px solid var(--border-color); border-radius: 8px; padding: 9px 11px; }
+        .rc-pad { position: relative; width: 100%; max-width: 150px; aspect-ratio: 1; margin: 0 auto;
+                  border: 1px solid var(--border-color); border-radius: 10px; touch-action: none;
+                  cursor: crosshair; background:
+                    linear-gradient(var(--border-color), var(--border-color)) center/1px 100% no-repeat,
+                    linear-gradient(var(--border-color), var(--border-color)) center/100% 1px no-repeat; }
+        .rc-pad i { position: absolute; width: 15px; height: 15px; border-radius: 50%;
+                    background: var(--nvidia-green); transform: translate(-50%, -50%);
+                    left: 50%; top: 50%; box-shadow: 0 0 0 4px rgba(118, 185, 0, .18); }
+        input[type=range].rc-vert { writing-mode: vertical-lr; direction: rtl;
+                                    width: 22px; height: 118px; accent-color: var(--nvidia-green); }
+
         :root {
             /* NVIDIA Brand Colors */
             --nvidia-green: #76B900;
@@ -2394,72 +2412,63 @@ limitations under the License.
                         <div class="input-hint">Wake plays the greeting and enables motors; Sleep parks the head.</div>
                     </div>
 
-                    <div class="form-group">
-                        <label>Look (head rotation)</label>
-                        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:6px; max-width:230px;">
-                            <span></span>
-                            <button onclick="reachyNudge({pitch:-12})" title="look up">▲</button>
-                            <span></span>
-                            <button onclick="reachyNudge({yaw:20})" title="look left">◀</button>
-                            <button onclick="reachyPost('/api/reachy/center')" title="centre all axes">◎</button>
-                            <button onclick="reachyNudge({yaw:-20})" title="look right">▶</button>
-                            <span></span>
-                            <button onclick="reachyNudge({pitch:12})" title="look down">▼</button>
-                            <span></span>
+                    <!-- Controller, laid out like the robot's own desktop app: antennas, then
+                         head X/Y + Z and pitch/yaw, then roll, then body yaw. Units are degrees
+                         and millimetres, which is what every other control here and the whole
+                         /api/reachy surface already uses; the app shows radians, and converting
+                         only for display would add a second place for a sign error on an axis
+                         whose pitch is already positive-downward. -->
+                    <div class="rc-sec">⌇⌇ Antennas</div>
+                    <div class="rc-row">
+                        <div class="rc-cell">
+                            <label>Left <span id="reachyAntLVal" class="hint">10°</span></label>
+                            <input type="range" id="reachyAntL" min="-150" max="150" value="10" step="1">
                         </div>
-                        <div class="input-hint">Nudges from the current pose. ◎ re-centres every axis.</div>
+                        <div class="rc-cell">
+                            <label>Right <span id="reachyAntRVal" class="hint">10°</span></label>
+                            <input type="range" id="reachyAntR" min="-150" max="150" value="10" step="1">
+                        </div>
                     </div>
 
-                    <div class="form-group">
-                        <label>Head yaw <span id="reachyYawVal" class="hint">0°</span></label>
-                        <input type="range" id="reachyYaw" min="-90" max="90" value="0" step="5"
-                               oninput="document.getElementById('reachyYawVal').textContent=this.value+'°'"
-                               onchange="reachyGoto({yaw: parseFloat(this.value)})">
+                    <div class="rc-sec">◉◉ Head</div>
+                    <div class="rc-row">
+                        <div class="rc-cell">
+                            <label>Position X/Y <span id="reachyXYVal" class="hint">0, 0 mm</span></label>
+                            <div style="display:flex; gap:10px; align-items:center;">
+                                <div class="rc-pad" id="reachyPadXY"><i></i></div>
+                                <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
+                                    <span class="hint">Z</span>
+                                    <input type="range" class="rc-vert" id="reachyZ"
+                                           min="-10" max="20" value="0" step="1">
+                                    <span class="hint" id="reachyZVal">0</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="rc-cell">
+                            <label>Pitch / Yaw <span id="reachyPYVal" class="hint">0, 0°</span></label>
+                            <div class="rc-pad" id="reachyPadPY"><i></i></div>
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label>Head pitch <span id="reachyPitchVal" class="hint">0°</span>
-                            <span class="hint">(+ is down)</span></label>
-                        <input type="range" id="reachyPitch" min="-40" max="40" value="0" step="5"
-                               oninput="document.getElementById('reachyPitchVal').textContent=this.value+'°'"
-                               onchange="reachyGoto({pitch: parseFloat(this.value)})">
-                    </div>
-                    <div class="form-group">
-                        <label>Head roll <span id="reachyRollVal" class="hint">0°</span></label>
-                        <input type="range" id="reachyRoll" min="-40" max="40" value="0" step="5"
-                               oninput="document.getElementById('reachyRollVal').textContent=this.value+'°'"
-                               onchange="reachyGoto({roll: parseFloat(this.value)})">
-                    </div>
-                    <div class="form-group">
-                        <label>Body yaw <span id="reachyBodyVal" class="hint">0°</span></label>
-                        <input type="range" id="reachyBody" min="-160" max="160" value="0" step="10"
-                               oninput="document.getElementById('reachyBodyVal').textContent=this.value+'°'"
-                               onchange="reachyGoto({body_yaw: parseFloat(this.value)})">
+                    <div class="form-group" style="margin-top:8px;">
+                        <label>Roll <span id="reachyRollVal" class="hint">0°</span></label>
+                        <input type="range" id="reachyRoll" min="-40" max="40" value="0" step="1">
                     </div>
 
+                    <div class="rc-sec">▭ Body</div>
                     <div class="form-group">
-                        <label>Head position (translation)</label>
-                        <div class="input-hint" style="margin-bottom:8px;">Lifts and shifts the head on its
-                            platform — use <b>Z</b> to raise the head so it clears the body before turning.
-                            Travel is small and the axes are coupled; limits are the measured usable range.</div>
-                        <label>Z up/down <span id="reachyZVal" class="hint">0 mm</span></label>
-                        <input type="range" id="reachyZ" min="-10" max="20" value="0" step="1"
-                               oninput="document.getElementById('reachyZVal').textContent=this.value+' mm'"
-                               onchange="reachyGoto({z: parseFloat(this.value)})">
-                        <label style="margin-top:8px;">X fwd/back <span id="reachyXVal" class="hint">0 mm</span></label>
-                        <input type="range" id="reachyX" min="-15" max="15" value="0" step="1"
-                               oninput="document.getElementById('reachyXVal').textContent=this.value+' mm'"
-                               onchange="reachyGoto({x: parseFloat(this.value)})">
-                        <label style="margin-top:8px;">Y left/right <span id="reachyYVal" class="hint">0 mm</span></label>
-                        <input type="range" id="reachyY" min="-20" max="20" value="0" step="1"
-                               oninput="document.getElementById('reachyYVal').textContent=this.value+' mm'"
-                               onchange="reachyGoto({y: parseFloat(this.value)})">
+                        <label>Yaw <span id="reachyBodyVal" class="hint">0°</span></label>
+                        <input type="range" id="reachyBody" min="-160" max="160" value="0" step="1">
                     </div>
-
+                    <div class="input-hint" style="margin-bottom:10px;">
+                        These track your finger — they set the target the robot's 50&nbsp;Hz loop is
+                        already chasing rather than queueing a move per change. Pitch is positive
+                        <b>downward</b>, so the pad is inverted: drag up to look up. Use <b>Z</b> to
+                        raise the head clear of the body before a big turn. Translation travel is
+                        small and the axes are coupled — the limits are the measured usable range.
+                    </div>
                     <div class="form-group">
-                        <label>Antennas <span id="reachyAntVal" class="hint">10°</span></label>
-                        <input type="range" id="reachyAnt" min="-90" max="90" value="10" step="5"
-                               oninput="document.getElementById('reachyAntVal').textContent=this.value+'°'"
-                               onchange="reachyGoto({antennas:[parseFloat(this.value), -parseFloat(this.value)]})">
+                        <button onclick="reachyPost('/api/reachy/center')" title="centre all axes">
+                            ◎ Centre all axes</button>
                     </div>
 
                     <div class="form-group">
@@ -3711,17 +3720,119 @@ After commands, explain: obstacles detected, clearance margins, goal inference, 
                         document.getElementById(lbl).textContent = Math.round(v) + (unit || '°');
                     }
                 };
-                set('reachyYaw', p.yaw, 'reachyYawVal');
-                set('reachyPitch', p.pitch, 'reachyPitchVal');
                 set('reachyRoll', p.roll, 'reachyRollVal');
                 set('reachyBody', st.body_yaw_deg, 'reachyBodyVal');
                 const mm = st.pos_mm || {};
-                set('reachyZ', mm.z, 'reachyZVal', ' mm');
-                set('reachyX', mm.x, 'reachyXVal', ' mm');
-                set('reachyY', mm.y, 'reachyYVal', ' mm');
+                set('reachyZ', mm.z, 'reachyZVal', '');
+                const a = st.antennas_deg;
+                if (a && a.length === 2) {
+                    set('reachyAntL', a[0], 'reachyAntLVal');
+                    set('reachyAntR', a[1], 'reachyAntRVal');
+                }
+                rcSync(p, mm, st.body_yaw_deg, a);
             } catch (e) { /* panel simply stays as it was */ }
         }
 
+        // ------------------------------------------------- live controller (app-style)
+        // One target, one throttled sender. /api/reachy/target sets the pose the robot's own
+        // 50 Hz loop is already tracking, so dragging a control is smooth; /api/reachy/goto
+        // would queue an interpolated move per change and the head would lag then lurch.
+        const RC = { x: 0, y: 0, z: 0, roll: 0, pitch: 0, yaw: 0, body_yaw: 0, antennas: [10, 10] };
+        const RC_RANGE = { x: 15, y: 20, pitch: 40, yaw: 90 };   // pad half-extents, matching the server clamps
+        let rcBusy = false, rcPend = false, rcLast = 0, rcHeld = 0;
+
+        function rcTouch() { rcHeld = Date.now(); }
+
+        async function rcSend() {
+            if (rcBusy) { rcPend = true; return; }
+            const now = Date.now();
+            if (now - rcLast < 70) {
+                if (!rcPend) { rcPend = true; setTimeout(() => { rcPend = false; rcSend(); }, 70 - (now - rcLast)); }
+                return;
+            }
+            rcBusy = true; rcLast = now;
+            try {
+                const r = await fetch('/api/reachy/target', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(RC),
+                });
+                if (!r.ok) {
+                    const j = await r.json().catch(() => ({}));
+                    reachySay(j.error || `HTTP ${r.status}`, true);
+                }
+            } catch (e) { /* one dropped frame of control is not worth a banner */ }
+            rcBusy = false;
+            if (rcPend) { rcPend = false; rcSend(); }
+        }
+
+        function rcBindSlider(id, lblId, key, unit, idx) {
+            const el = document.getElementById(id), lbl = document.getElementById(lblId);
+            if (!el) return;
+            el.addEventListener('input', () => {
+                rcTouch();
+                const v = parseFloat(el.value);
+                if (idx === undefined) RC[key] = v; else RC.antennas[idx] = v;
+                if (lbl) lbl.textContent = v + (unit === undefined ? '°' : unit);
+                rcSend();
+            });
+        }
+
+        // `inv` flips the vertical axis for pitch, which is positive downward on this robot:
+        // without it, dragging up would make the head look down.
+        function rcBindPad(id, lblId, kx, ky, rx, ry, inv, unit) {
+            const pad = document.getElementById(id);
+            if (!pad) return;
+            const dot = pad.querySelector('i'), lbl = document.getElementById(lblId);
+            let down = false;
+            const paint = () => {
+                const fx = (RC[kx] / rx + 1) / 2, fy = ((inv ? -RC[ky] : RC[ky]) / ry + 1) / 2;
+                dot.style.left = (Math.min(1, Math.max(0, fx)) * 100) + '%';
+                dot.style.top = (100 - Math.min(1, Math.max(0, fy)) * 100) + '%';
+                if (lbl) lbl.textContent = `${Math.round(RC[kx])}, ${Math.round(RC[ky])}${unit}`;
+            };
+            const at = (ev) => {
+                const b = pad.getBoundingClientRect();
+                const fx = Math.min(1, Math.max(0, (ev.clientX - b.left) / b.width));
+                const fy = Math.min(1, Math.max(0, (ev.clientY - b.top) / b.height));
+                RC[kx] = (fx * 2 - 1) * rx;
+                const vy = ((1 - fy) * 2 - 1) * ry;
+                RC[ky] = inv ? -vy : vy;
+                rcTouch(); paint(); rcSend();
+            };
+            pad.addEventListener('pointerdown', e => { down = true; pad.setPointerCapture(e.pointerId); at(e); });
+            pad.addEventListener('pointermove', e => { if (down) at(e); });
+            pad.addEventListener('pointerup', e => { down = false; at(e); });
+            pad.addEventListener('pointercancel', () => { down = false; });
+            pad._paint = paint; paint();
+        }
+
+        // Pull the live pose back into the widgets, but never while the user is driving them.
+        function rcSync(p, mm, bodyYaw, ant) {
+            if (Date.now() - rcHeld < 1500) return;
+            if (p.roll != null) RC.roll = p.roll;
+            if (p.pitch != null) RC.pitch = p.pitch;
+            if (p.yaw != null) RC.yaw = p.yaw;
+            if (bodyYaw != null) RC.body_yaw = bodyYaw;
+            if (mm.x != null) RC.x = mm.x;
+            if (mm.y != null) RC.y = mm.y;
+            if (mm.z != null) RC.z = mm.z;
+            if (ant && ant.length === 2) RC.antennas = [ant[0], ant[1]];
+            const a = document.getElementById('reachyPadXY'), b = document.getElementById('reachyPadPY');
+            if (a && a._paint) a._paint();
+            if (b && b._paint) b._paint();
+        }
+
+        function rcInit() {
+            rcBindSlider('reachyAntL', 'reachyAntLVal', null, '°', 0);
+            rcBindSlider('reachyAntR', 'reachyAntRVal', null, '°', 1);
+            rcBindSlider('reachyRoll', 'reachyRollVal', 'roll', '°');
+            rcBindSlider('reachyBody', 'reachyBodyVal', 'body_yaw', '°');
+            rcBindSlider('reachyZ', 'reachyZVal', 'z', '');
+            rcBindPad('reachyPadXY', 'reachyXYVal', 'x', 'y', RC_RANGE.x, RC_RANGE.y, false, ' mm');
+            rcBindPad('reachyPadPY', 'reachyPYVal', 'yaw', 'pitch', RC_RANGE.yaw, RC_RANGE.pitch, true, '°');
+        }
+
+        rcInit();
         refreshReachy();
         setInterval(refreshReachy, 5000);
 

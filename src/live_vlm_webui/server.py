@@ -1214,6 +1214,33 @@ async def reachy_goto(request):
         return web.json_response({"error": f"bad request: {e}"}, status=400)
 
 
+async def reachy_target(request):
+    """Live pose control for the sliders and drag pads. Same body as goto, minus duration.
+
+    Separate from /api/reachy/goto because the two are not interchangeable: goto queues an
+    interpolated move, which is what a "centre yourself" button wants and what makes a dragged
+    slider lag and lurch. This sets the target the robot's 50 Hz loop already tracks.
+    """
+    ctl = _require_reachy()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    def num(key):
+        v = body.get(key)
+        return None if v is None or v == "" else float(v)
+
+    try:
+        return await _reachy_action(ctl.set_target(
+            pitch=num("pitch"), yaw=num("yaw"), roll=num("roll"), body_yaw=num("body_yaw"),
+            x=num("x"), y=num("y"), z=num("z"),
+            antennas=body.get("antennas"),
+        ))
+    except (TypeError, ValueError) as e:
+        return web.json_response({"error": f"bad request: {e}"}, status=400)
+
+
 async def on_startup(app):
     """Initialize resources on server startup"""
     global gpu_monitor, gpu_monitor_task
@@ -1310,6 +1337,7 @@ async def create_app(test_mode=False):
     app.router.add_post("/api/reachy/sleep", reachy_sleep)
     app.router.add_post("/api/reachy/center", reachy_center)
     app.router.add_post("/api/reachy/goto", reachy_goto)
+    app.router.add_post("/api/reachy/target", reachy_target)
     app.router.add_post("/api/reachy/motors/{mode}", reachy_motors)
     app.router.add_post("/api/reachy/antenna/{side}/{state}", reachy_antenna_power)
 

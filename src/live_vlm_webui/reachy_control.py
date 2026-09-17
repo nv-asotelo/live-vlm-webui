@@ -21,6 +21,7 @@ SPDX-License-Identifier: Apache-2.0
 import asyncio
 import logging
 import math
+import time
 from typing import Optional
 
 import aiohttp
@@ -52,6 +53,11 @@ LIMITS_MM = {
 
 # The head may not be twisted more than this away from the body.
 MAX_YAW_DELTA_DEG = 65.0
+
+# How long set_target() trusts its own last command when holding an unspecified axis. Long enough
+# that a dragged control never falls back to the measured pose mid-drag, short enough that moving
+# the head by hand (or another client moving it) is adopted rather than fought.
+CMD_MEMORY_S = 5.0
 
 # Where "centre" parks the antennas, and the UI's default.
 #
@@ -86,6 +92,10 @@ class ReachyControl:
         else:
             self.base = f"http://{host}:{port}"
         self.timeout = aiohttp.ClientTimeout(total=timeout)
+        # Last pose this client commanded, so set_target() can hold an unspecified axis at
+        # what it was ASKED to be rather than at what the platform settled on. See set_target.
+        self._last_cmd: dict = {}
+        self._last_cmd_at = 0.0
 
     # ------------------------------------------------------------------ helpers
     async def _get(self, path: str) -> dict:
@@ -292,6 +302,113 @@ class ReachyControl:
         await self._post("/api/move/goto", payload)
         return {
             "message": "moving",
+            "applied_deg": {"pitch": pitch, "yaw": yaw, "roll": roll, "body_yaw": body},
+            "applied_mm": {"x": tx, "y": ty, "z": tz},
+            "notes": notes,
+        }
+
+    async def set_target(
+        self,
+        pitch: Optional[float] = None,
+        yaw: Optional[float] = None,
+        roll: Optional[float] = None,
+        body_yaw: Optional[float] = None,
+        antennas: Optional[list] = None,
+        x: Optional[float] = None,
+        y: Optional[float] = None,
+        z: Optional[float] = None,
+    ) -> dict:
+        """Set the pose the robot should be tracking, and return at once. Degrees and millimetres.
+
+        This is goto()'s sibling for *live* controls - sliders and drag pads. goto() plans an
+        interpolated trajectory of a given duration, which is right for "centre yourself" and wrong
+        for a control being dragged: each new position queues another overlapping trajectory, so
+        the head lags the finger and then catches up in lurches. set_target() only updates the
+        setpoint that the robot's own 50 Hz loop is already chasing, so the newest value always
+        wins and the motion is as smooth as that loop.
+
+        Same clamping, same motor-mode refusal and same head-vs-body twist limit as goto(); the
+        only difference is the endpoint and the absence of a duration.
+        """
+        notes = []
+        current = await self.state()
+        cur_pose = current.get("pose_deg") or {}
+        cur_body = current.get("body_yaw_deg") or 0.0
+        cur_pos = current.get("pos_mm") or {}
+
+        if (current.get("motor_mode") or "").lower() == "disabled":
+            raise ValueError(
+                "motors are disabled, so the robot cannot move - press Stiff (or Wake) first"
+            )
+
+        # An unspecified axis holds its LAST COMMANDED value, not its measured one.
+        #
+        # Measured looks more obviously correct and is wrong: this is a Stewart platform that
+        # settles a degree or two off target, so feeding the measurement back as the next command
+        # amplifies that offset every call. Measured live, roll walked 3.7 -> 5.1 -> 8.6 -> 10.0
+        # over four requests that never mentioned roll - a slow head tilt with no cause the user
+        # could see. The cache is dropped after CMD_MEMORY_S so that moving the robot by hand, or
+        # any other client, is still picked up rather than being fought.
+        held = self._last_cmd if (time.monotonic() - self._last_cmd_at) < CMD_MEMORY_S else {}
+
+        def hold(key, given, measured):
+            if given is not None:
+                return float(given)
+            return float(held.get(key, measured))
+
+        pitch = hold("pitch", pitch, cur_pose.get("pitch", 0.0))
+        yaw = hold("yaw", yaw, cur_pose.get("yaw", 0.0))
+        roll = hold("roll", roll, cur_pose.get("roll", 0.0))
+        body = hold("body_yaw", body_yaw, cur_body)
+        tx = hold("x", x, cur_pos.get("x", 0.0))
+        ty = hold("y", y, cur_pos.get("y", 0.0))
+        tz = hold("z", z, cur_pos.get("z", 0.0))
+
+        vals = {"x": tx, "y": ty, "z": tz}
+        for axis in ("x", "y", "z"):
+            vals[axis], hit = self._clamp(vals[axis], axis)
+            if hit:
+                notes.append(f"{axis} clamped to {vals[axis]:g} mm")
+        tx, ty, tz = vals["x"], vals["y"], vals["z"]
+
+        rot = {"pitch": pitch, "roll": roll, "yaw": yaw, "body_yaw": body}
+        for name in ("pitch", "roll", "yaw", "body_yaw"):
+            rot[name], hit = self._clamp(rot[name], name)
+            if hit:
+                notes.append(f"{name} clamped to {rot[name]:g}°")
+        pitch, roll, yaw, body = rot["pitch"], rot["roll"], rot["yaw"], rot["body_yaw"]
+
+        if abs(yaw - body) > MAX_YAW_DELTA_DEG:
+            body = self._clamp(
+                yaw - math.copysign(MAX_YAW_DELTA_DEG, yaw - body), "body_yaw"
+            )[0]
+            notes.append(f"body turned to {body:g}° to stay within the {MAX_YAW_DELTA_DEG:g}° limit")
+
+        payload: dict = {
+            "target_head_pose": {
+                "x": tx / 1000.0, "y": ty / 1000.0, "z": tz / 1000.0,
+                "roll": math.radians(roll),
+                "pitch": math.radians(pitch),
+                "yaw": math.radians(yaw),
+            },
+            "target_body_yaw": math.radians(body),
+        }
+        if antennas is not None:
+            av = []
+            for a in list(antennas)[:2]:
+                clamped, hit = self._clamp(float(a), "antenna")
+                if hit:
+                    notes.append(f"antenna clamped to {clamped:g}°")
+                av.append(math.radians(clamped))
+            if len(av) == 2:
+                payload["target_antennas"] = av
+
+        await self._post("/api/move/set_target", payload)
+        self._last_cmd = {"pitch": pitch, "yaw": yaw, "roll": roll, "body_yaw": body,
+                          "x": tx, "y": ty, "z": tz}
+        self._last_cmd_at = time.monotonic()
+        return {
+            "message": "tracking",
             "applied_deg": {"pitch": pitch, "yaw": yaw, "roll": roll, "body_yaw": body},
             "applied_mm": {"x": tx, "y": ty, "z": tz},
             "notes": notes,
